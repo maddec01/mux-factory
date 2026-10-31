@@ -12,7 +12,7 @@ import { PublishButton } from '../publication/publication-dialog.tsx';
 // asks "Discard changes?" first.
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { HINTS, onAzure, openBlockers, itemName, repoKey, sameRepo, shortAgo } from '@lar-factory/shared';
+import { HINTS, blockedText, onAzure, openBlockers, itemName, repoKey, sameRepo, shortAgo } from '@lar-factory/shared';
 import type { BoardData, Item } from '@lar-factory/shared';
 import type { ItemDetailsRead } from './use-item-details.ts';
 import { Button } from '@lar-factory/ui/design-system/Button';
@@ -23,6 +23,7 @@ import { EXPANDED, ExpandButton, useExpand } from '../expand-dialog/expand-dialo
 import { AbandonButton, ActionError, BackToListButton, QueueButton } from '../items/item-actions.tsx';
 import { OpenThread, hasLiveThread } from '../items/open-thread.tsx';
 import { NeedsYou } from '../items/needs-you.tsx';
+import { Dependencies, dependenciesOf } from '../items/dependencies.tsx';
 import { PrLink } from '../items/pr-link.tsx';
 import { AgentWork, PrList, RepoTag } from '../items/item-parts.tsx';
 import { LinkButton } from '../items/link-button.tsx';
@@ -66,9 +67,9 @@ function MoveActions({ item, data }: { item: Item; data: BoardData }) {
 /** The work records the item's record waits on, as the board holds them. */
 const waitsOn = (item: Item) => item.blockers.filter((b) => b.workId);
 
-/** Whether the sidebar has anything: work it waits on, pull requests, or sub-tickets (as many as the board counts while the details load). */
+/** Whether the sidebar has anything: work it waits on, Dependencies, pull requests, or sub-tickets (as many as the board counts while the details load). */
 const hasRelations = (item: Item, read: ItemDetailsRead): boolean =>
-  item.linkedPrs.length > 0 || waitsOn(item).length > 0
+  item.linkedPrs.length > 0 || waitsOn(item).length > 0 || dependenciesOf(item).length > 0
   || (read.state === 'loaded' ? (read.details.subTickets.length > 0 || Boolean(read.details.attachments?.length || read.details.related?.length || read.details.blockers?.length || read.details.relationsError)) : read.state === 'loading' && item.subIssues.total > 0);
 
 const Section = ({ heading, children }: { heading: ReactNode; children: ReactNode }) => (
@@ -107,7 +108,7 @@ function ItemDialogContent({ item, data, now, read, edit, expanded, toggleExpand
           <RepoTag repo={repoKey(item)} repos={data.repos} />
           <StatusGlyph status={item.status} /> <span className="font-medium text-base-content">{item.status}</span>
           <span className="min-w-0 truncate @max-[30rem]:hidden">· updated {shortAgo(item.updatedAt, now)}</span>
-          {openBlockers(item).length > 0 && <span className="rounded bg-(--error-surface) px-1.5 text-(--error-foreground)">blocked by {openBlockers(item).length}</span>}
+          {openBlockers(item).length > 0 && <span className="rounded bg-(--error-surface) px-1.5 text-(--error-foreground)" title={blockedText(item) ?? undefined}>blocked by {openBlockers(item).length}<span className="sr-only">. {blockedText(item)}</span></span>}
         </div>
         {item.parent && <p className="m-0 min-w-0 wrap-anywhere" data-item-parent>Part of {item.parent.url
           ? <a href={item.parent.url} target="_blank" rel="noopener" className="underline">{itemName(item.parent)}</a> : itemName(item.parent)}</p>}
@@ -134,6 +135,7 @@ function ItemDialogContent({ item, data, now, read, edit, expanded, toggleExpand
                 {waitsOn(item).length > 0 && <Section heading="Waits on"><ul className="m-0 grid list-none gap-1.5 p-0 text-sm" data-waits-on>
                   {waitsOn(item).map((b) => <li key={b.workId} className={b.state === 'closed' ? 'text-(--muted-foreground) line-through' : ''}>{b.title}</li>)}
                 </ul></Section>}
+                {dependenciesOf(item).length > 0 && <Section heading="Dependencies"><Dependencies item={item} data={data} now={now} /></Section>}
                 <ItemRelations item={item} read={read} />
                 {item.linkedPrs.length > 0 && <Section heading="Pull requests"><PrList item={item} /></Section>}
               </aside>

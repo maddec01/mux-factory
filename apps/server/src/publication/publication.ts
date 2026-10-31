@@ -41,6 +41,8 @@ export function createPublication(records: WorkRecords | null, options: Publicat
     for (const result of plan.results) {
       if (result.operation.kind !== 'create' || result.status !== 'successful' || !result.attempt?.ticket || !result.attempt.url) continue;
       const ticketWorkId = result.operation.ticketWorkId;
+      // A Dependency's ticket is recorded on the Dependency by the journal.
+      if (plan.tickets.find((ticket) => ticket.workId === ticketWorkId)?.dependencyOf) continue;
       if (records!.publicationAttachment(ticketWorkId)) continue;
       records!.attachPublicationUrl(ticketWorkId, records!.read(ticketWorkId).revision, plan.planId, result.attempt.ticket, result.attempt.url);
       changed = true;
@@ -58,13 +60,15 @@ export function createPublication(records: WorkRecords | null, options: Publicat
         body: records!.body(source.workId, record.kind === 'concept' ? 'map' : 'brief') ?? '' };
     });
     for (const source of sources) if (!options.allowed(source.repository)) invalid(`${source.repository} is not an onboarded publication destination.`);
-    const settings = await Promise.all([...new Set(sources.map((source) => source.repository))].map(options.settings));
+    // Onboarded owners of a Dependency's request show their Vocabulary and access; others have neither.
+    const owners = plan?.tickets.filter((ticket) => ticket.dependencyOf && options.allowed(ticket.destination.repository)).map((ticket) => ticket.destination.repository) ?? [];
+    const settings = await Promise.all([...new Set([...sources.map((source) => source.repository), ...owners])].map(options.settings));
     let pending = plan ? await inspect(workId, plan.planId) : null;
     if (pending?.next) {
       const ticket = plan!.tickets.find((ticket) => ticket.workId === pending!.next!.ticketWorkId)!;
       const writeTicket = publicationWriteTicket(pending.next, plan!.tickets);
-      const setup = settings.find((config) => config.setup.repo === writeTicket.destination.repository)!.setup;
-      const reasons = publicationConsents(pending.next, ticket).filter((operation) => !setup.consent.includes(operation) || setup.access[operation] === 'refused')
+      const setup = settings.find((config) => config.setup.repo === writeTicket.destination.repository)?.setup;
+      const reasons = !setup ? [] : publicationConsents(pending.next, ticket).filter((operation) => !setup.consent.includes(operation) || setup.access[operation] === 'refused')
         .map((operation) => `${setup.repo} needs separate consent and credential access for ${operation}.`);
       if (reasons.length) pending = { ...pending, current: false, next: null, reasons: [...pending.reasons, ...reasons] };
     }
@@ -93,7 +97,7 @@ export function createPublication(records: WorkRecords | null, options: Publicat
           if (!Array.isArray(supplied) || supplied.length !== sources.length || sources.some((source) => !supplied.some((value: unknown) =>
             isRecord(value) && value.workId === source.workId && value.revision === source.revision))) invalid('The refinement changed. Reopen publication and review the current sources.');
           const request: PreparePublication = { documents: input.documents as PreparePublication['documents'] };
-          for (const key of ['typeSelections', 'replaces', 'delivery', 'resolutions'] as const) if (input[key] !== undefined) Object.assign(request, { [key]: input[key] });
+          for (const key of ['dependencies', 'typeSelections', 'replaces', 'delivery', 'resolutions'] as const) if (input[key] !== undefined) Object.assign(request, { [key]: input[key] });
           await engine.prepare(workId, request);
         } else {
           if (typeof input.planId !== 'string' || !input.planId) invalid('Name the stored publication plan.');

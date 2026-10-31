@@ -1,13 +1,35 @@
 // The board's items: the work records of the onboarded repositories, each with its ticket's context when an item source
-// read the ticket. The record owns Status, kind, title, structure, blockers and slices; the ticket adds its URL, labels,
+// read the ticket. The record owns Status, kind, title, structure, blockers, Dependencies and slices; the ticket adds its URL, labels,
 // PRs and provider fields, so a ticket edit never moves, retitles, restructures or blocks work.
 
-import { parseConceptMap, refKey, sameRepo } from '@lar-factory/shared';
-import type { Blocker, IssueRef, Item, NeedsYouOffer, RepositorySetup, Slice, SliceProgress } from '@lar-factory/shared';
-import type { WorkRecord, WorkRecords } from '@lar-factory/work-records';
+import { onAzure, parseConceptMap, refKey, sameRepo } from '@lar-factory/shared';
+import type { Blocker, DependencyHold, IssueRef, Item, NeedsYouOffer, RepositorySetup, Slice, SliceProgress } from '@lar-factory/shared';
+import type { Dependency, WorkRecord, WorkRecords } from '@lar-factory/work-records';
+import { workItemUrl } from '../azure/azure-items.ts';
+import { prUrl } from '../config/pr-host.ts';
 
 /** The number in a ticket reference, `owner/name#12`. */
 const ticketNumber = (ticket: string | null): number => (ticket ? Number(ticket.slice(ticket.lastIndexOf('#') + 1)) : 0);
+
+/** The page of a ticket or PR reference: a GitHub issue or PR, or an Azure DevOps work item or PR. */
+function referenceUrl(reference: string, pr: boolean): string {
+  const repo = reference.slice(0, reference.lastIndexOf('#'));
+  const number = ticketNumber(reference);
+  if (pr) return prUrl(repo, number);
+  const [organization, project] = repo.split('/');
+  return onAzure(repo) ? workItemUrl(organization!, project!, number) : `https://github.com/${repo}/issues/${number}`;
+}
+
+/** A Dependency as the blocker it is for each build it holds: open until the user marks it met, which no observation decides. */
+function dependencyBlocker(d: Dependency): Blocker {
+  const observation = d.observations.reduce<DependencyHold['observation']>((latest, o) => (!latest || o.observedAt > latest.observedAt ? o : latest), null);
+  const named = [...d.ticket ? [{ reference: d.ticket, url: referenceUrl(d.ticket, false) }] : [],
+    ...d.pullRequests.map((pr) => ({ reference: pr, url: referenceUrl(pr, true) }))];
+  const hold: DependencyHold = { dependencyId: d.dependencyId, revision: d.revision, owner: d.owner, need: d.need, ticket: d.ticket, named,
+    evidence: d.evidence, met: d.met, needsReview: d.needsReview, observation };
+  return { number: ticketNumber(d.ticket), repo: d.ticket ? d.ticket.slice(0, d.ticket.lastIndexOf('#')) : d.owner, state: d.met ? 'closed' : 'open',
+    title: d.need, dependency: hold };
+}
 
 const isDone = (record: WorkRecord) => record.status === 'Done';
 const state = (record: WorkRecord): 'open' | 'closed' => (isDone(record) ? 'closed' : 'open');
@@ -73,7 +95,8 @@ function itemMapper(records: WorkRecords, tickets: readonly Item[], paused: Paus
     const children = records.children(record.workId).filter((c) => !c.setAside);
     // A blocker holds the work until its local facts complete it; its Status, its ticket closing and its thread ending never do.
     const blockers = records.blockers(record.workId).map((b): Blocker => ({ number: ticketNumber(b.ticket), repo: b.repository,
-      state: records.completion(b.workId).complete ? 'closed' : 'open', workId: b.workId, title: b.title }));
+      state: records.completion(b.workId).complete ? 'closed' : 'open', workId: b.workId, title: b.title }))
+      .concat(record.kind === 'build' ? records.blockingDependencies(record.workId).map(dependencyBlocker) : []);
     const slices = children.filter((c) => c.kind === 'slice').map((c): Slice => ({ ...ref(c), progress: sliceProgress(c), workId: c.workId }));
     const work = children.filter((c) => c.kind !== 'slice');
     const mapBody = record.kind === 'concept' ? records.body(record.workId, 'map') : null;

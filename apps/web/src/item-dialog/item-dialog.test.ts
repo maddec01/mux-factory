@@ -4,7 +4,7 @@
 
 import { expect, test, vi } from 'vite-plus/test';
 import { $, $$, answer, holdPosts, mountPage, moved, posted, pressMenu, sample, settle, text, toast } from '../../test/support.ts';
-import type { BoardData, Item, ItemThread } from '@lar-factory/shared';
+import type { Blocker, BoardData, DependencyHold, Item, ItemThread } from '@lar-factory/shared';
 
 const dialog = () => $('[data-item-dialog]');
 const inDialog = <T extends Element = HTMLElement>(selector: string) => dialog()!.querySelector<T>(selector);
@@ -30,7 +30,7 @@ test('the dialog shows the repository, status, update time, blockers, numbered t
   await openItem('I_sample13');
   expect(dialog()!.getAttribute('role')).toBe('dialog');
   const summary = inDialog('[data-item-summary] > div')!;
-  expect(text(summary)).toBe('lar-server Ready· updated 1h agoblocked by 1');
+  expect(text(summary)).toBe('lar-server Ready· updated 1h agoblocked by 1. Blocked by #202 until it completes');
   expect(text(inDialog('[data-slot="modal-header"] h2'))).toBe('#140 Owner accounts');
   const parent = inDialog<HTMLAnchorElement>('[data-item-parent] a')!;
   expect([text(parent), parent.href]).toEqual(['#200 lar cloud: website sign-in and relay', 'https://github.com/maddec01/lar-server/issues/200']);
@@ -513,6 +513,74 @@ test('work that needs you shows why, posts each choice it offers and Clear, and 
   await answer({ error: null });
   await press($$<HTMLButtonElement>('[data-needs-you-reason] button')[2]!);
   expect(text($('#abandon-dialog h2'))).toMatch(/^Abandon #129 /);
+});
+
+/** A Dependency on the server team blocking a build, its ticket read an hour before NOW as `kind`. */
+function dependencyBlocker(kind: NonNullable<DependencyHold['observation']>['kind'], change: Partial<DependencyHold> = {}): Blocker {
+  const hold: DependencyHold = { dependencyId: 'dep-1', revision: 3, owner: 'server team', need: 'An export endpoint', ticket: 'maddec01/lar-server#40',
+    named: [{ reference: 'maddec01/lar-server#40', url: 'https://github.com/maddec01/lar-server/issues/40' }], evidence: 'The endpoint answers in staging', met: null, needsReview: false,
+    observation: { subject: 'maddec01/lar-server#40', kind, detail: null, observedAt: '2026-10-21T09:00:00Z', lastGood: null }, ...change };
+  return { number: 40, repo: 'maddec01/lar-server', state: hold.met ? 'closed' : 'open', title: hold.need, dependency: hold };
+}
+const withDependency = (blocker: Blocker): BoardData => ({ ...sample, capture: { enabled: true, session: 'session-1' },
+  items: sample.items.map((i) => (i.id === 'I_sample13' ? { ...i, blockers: [blocker] } : i)) });
+const dependencyRow = () => inDialog('[data-dependency="dep-1"]')!;
+
+test('a Dependency shows its team, ticket, latest read and evidence, suggests Mark met once its ticket closed, and posts the mark', async () => {
+  holdPosts();
+  await mountPage(withDependency(dependencyBlocker('closed')));
+  await openItem('I_sample13');
+  expect(text(inDialog('[data-item-summary] > div'))).toContain('blocked by 1');
+  expect(text(section('Dependencies').querySelector('[data-dependency-owner]'))).toBe('Dependency on server team · not met');
+  expect(text(dependencyRow())).toContain('An export endpoint');
+  expect(text(dependencyRow().querySelector('[data-dependency-read]'))).toBe('maddec01/lar-server#40 closed, read 1h ago');
+  const ticket = dependencyRow().querySelector<HTMLAnchorElement>('[data-dependency-read] a')!;
+  expect([text(ticket), ticket.href, ticket.target], 'its ticket opens in the browser').toEqual(['maddec01/lar-server#40', 'https://github.com/maddec01/lar-server/issues/40', '_blank']);
+  expect(text(dependencyRow().querySelector('[data-dependency-evidence]'))).toBe('Evidence: The endpoint answers in staging');
+  expect(text(dependencyRow().querySelector('[data-dependency-notice]'))).toBe('Its ticket maddec01/lar-server#40 is closed. Mark it met once the change is delivered.');
+  expect(footerControls()).toEqual(['GitHub', 'Start after server team ▾']);
+  expect(inDialog<HTMLButtonElement>('[data-start-after]')!.title).toBe('Starts by itself once you mark the Dependency on server team met');
+  expect(dependencyRow().querySelector('button')!.getAttribute('aria-label')).toMatch(/^Mark the Dependency on server team met: #140 /);
+  await press(dependencyRow().querySelector<HTMLButtonElement>('button')!);
+  expect(posted()).toEqual([['/api/dependency-met', { itemId: 'I_sample13', dependencyId: 'dep-1', revision: 3, met: true }]]);
+  await answer({ error: 'The Dependency dep-1 is at revision 4, not 3; read it again and retry.' }, 409);
+  expect(text(inDialog('.action-error [role="alert"]'))).toBe('The Dependency dep-1 is at revision 4, not 3; read it again and retry.');
+});
+
+test('a Dependency with an open ticket suggests nothing, and one without a read or evidence says so', async () => {
+  await mountPage(withDependency(dependencyBlocker('open', { evidence: '', observation: null })));
+  await openItem('I_sample13');
+  expect(text(dependencyRow().querySelector('[data-dependency-read]'))).toBe('maddec01/lar-server#40 not read yet');
+  expect(text(dependencyRow().querySelector('[data-dependency-evidence]'))).toBe('No evidence agreed yet');
+  expect(dependencyRow().querySelector('[data-dependency-notice]')).toBeNull();
+});
+
+test('a Dependency naming no ticket or PR says it is a handover only', async () => {
+  await mountPage(withDependency(dependencyBlocker('open', { ticket: null, named: [], observation: null })));
+  await openItem('I_sample13');
+  expect(text(dependencyRow().querySelector('[data-dependency-read]'))).toBe('No ticket. Handover only.');
+});
+
+test("a Dependency whose read failed says how in words, beside the last read that answered", async () => {
+  const lastGood = { kind: 'open' as const, observedAt: '2026-10-19T09:00:00Z' };
+  await mountPage(withDependency(dependencyBlocker('access-lost', { observation: { subject: 'maddec01/lar-server#40', kind: 'access-lost', detail: 'HTTP 403',
+    observedAt: '2026-10-21T09:00:00Z', lastGood } })));
+  await openItem('I_sample13');
+  expect(text(dependencyRow().querySelector('[data-dependency-read]'))).toBe('maddec01/lar-server#40 access lost, read 1h ago; last read open, 2d ago');
+});
+
+test('a met Dependency whose ticket changed since asks for a review, offers to clear the mark and no longer blocks', async () => {
+  holdPosts();
+  await mountPage(withDependency(dependencyBlocker('reopened', { met: { by: 'pedro', at: '2026-10-21T08:00:00Z' }, needsReview: true })));
+  await openItem('I_sample13');
+  expect(text(inDialog('[data-item-summary] > div'))).not.toContain('blocked by');
+  expect(text(section('Dependencies').querySelector('[data-dependency-owner]'))).toBe('Dependency on server team · met, marked by pedro 2h ago');
+  expect(text(dependencyRow().querySelector('[data-dependency-notice]'))).toBe('Its ticket maddec01/lar-server#40 changed to reopened after you marked it met. Review the mark.');
+  const clear = dependencyRow().querySelector<HTMLButtonElement>('button')!;
+  expect(text(clear)).toBe('Clear met mark');
+  expect(clear.getAttribute('aria-label')).toMatch(/^Clear the met mark on the Dependency on server team: #140 /);
+  await press(clear);
+  expect(posted()).toEqual([['/api/dependency-met', { itemId: 'I_sample13', dependencyId: 'dep-1', revision: 3, met: false }]]);
 });
 
 test('work that needs nothing from you shows no reason', async () => {

@@ -16,9 +16,9 @@ import { createBoardState } from './board/board-state.ts';
 import { configUpdateOf, dismissConfigUpdate } from './config/config-update.ts';
 import { openConfigUpdatePr, readEditPrs } from './config/edit-config.ts';
 import { onTheBoard, readBoardSettings, readRepositoryList, stillOnboarding, type OnboardedRepository } from './config/repository-config.ts';
-import { prHost, prUrl } from './config/pr-host.ts';
+import { observePr } from './config/pr-host.ts';
 import { changeRepositorySettings, readDismissedUpdates, readOnboardedConfigs } from './config/repository-settings.ts';
-import { editPrBody, ghCooldown, ghQuotaLow, readPrBody } from './github/github.ts';
+import { editPrBody, ghCooldown, ghQuotaLow, observeIssue, readPrBody } from './github/github.ts';
 import { mergedStats, prStatsEdits, retainStats, updatedBody } from './github/pr-stats.ts';
 import { createBoardServer } from './http/http.ts';
 import { createCapture } from './items/capture.ts';
@@ -627,14 +627,16 @@ async function observeProviders(): Promise<void> {
   if (!records || observing || Date.now() - observedAt < idleMs()) return;
   observing = true;
   observedAt = Date.now();
-  const toState = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' } as const;
   const repos = items.repos().map((r) => r.repo);
   try {
-    // While gh's quota runs low, GitHub repositories' reads wait and their records keep their last observation; az reads go on.
+    // While gh's quota runs low, GitHub repositories' reads wait and their records and Dependencies keep their last
+    // observation; az reads go on. A GitHub ticket reads through gh whether or not its repository is onboarded, as a
+    // Dependency's owner may not be.
     await observeRecords(records, quotaLow ? repos.filter(onAzure) : repos, {
-      ticket: (repo, number) => items.observeTicket(repo, number),
-      pr: async (repo, number) => toState[await prHost(repo).prState(prUrl(repo, number))],
+      ticket: (repo, number) => (onAzure(repo) ? items.observeTicket(repo, number) : observeIssue(repo, number)),
+      pr: (repo, number) => observePr(repo, number),
       known: (repo, number) => knownTicket(repo, number),
+      waits: (repo) => quotaLow && !onAzure(repo),
     }, retention.hidden(), showRecords);
     // After the PR reads, so a concept whose last build merged finishes in the same pass.
     finishCompleted(records, repos);

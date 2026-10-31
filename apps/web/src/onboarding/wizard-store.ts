@@ -5,8 +5,8 @@
 // repository's setup, reading only, and holds Next until it can use the T3 project's folder. Work to import lists the
 // open tickets with a status label or tag, and Next imports the ticked ones, staying on the step while one needs the
 // user to settle its Status or placement. Repository edits previews the PR that drops the factory files the user
-// unticked, and Finish waits for the user's approval of it. Finish saves the answers as local settings, which puts the
-// repository on the board, then opens the approved PR.
+// unticked, and Finish waits for the user's approval of it. Finish saves the answers as local settings, with the
+// Connections ticked, which puts the repository on the board, then opens the approved PR.
 
 import { create } from 'zustand';
 import {
@@ -16,7 +16,7 @@ import {
 import { useBoardStore } from '../board/board-store.ts';
 import { postAction, receive } from '../items/card-actions.ts';
 import { showToast } from '../notices/toasts.tsx';
-import { STEP_TITLES, answerProblem, answersOf, isStep, stepsOf, type StepId } from './wizard-choices.ts';
+import { STEP_TITLES, answerProblem, answersOf, connectionsOf, isStep, stepsOf, type StepId } from './wizard-choices.ts';
 
 /** Where a kept onboarding stopped, as a phrase; a step this dialog doesn't have, as an older board's, reads as the first. */
 export const stoppedAt = ({ step }: OnboardingProgress): string => `stopped at ${STEP_TITLES[isStep(step) ? step : 'project']}`;
@@ -399,7 +399,8 @@ export const useWizardStore = create<WizardState>()((set, get) => {
         || !stepReady(run, projects, detection, tickets, changes, approved)) return;
       const { drop, ...answers } = answersOf(detected, run.choices);
       set({ finish: { state: 'saving' } });
-      const result = await postAction('/api/onboarding/setup', { repo: run.repo, projectId: run.projectId, ...answers, ...replacing({ ...run, repo: run.repo }) });
+      const connections = connectionsOf(run.repo, answers.role, run.choices, useBoardStore.getState().data.repos);
+      const result = await postAction('/api/onboarding/setup', { repo: run.repo, projectId: run.projectId, ...answers, connections, ...replacing({ ...run, repo: run.repo }) });
       receive(result);
       if (get().run !== run) return;
       if (result.error) return set({ finish: { state: 'failed', error: result.error } });

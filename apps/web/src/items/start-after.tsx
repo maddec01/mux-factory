@@ -5,7 +5,7 @@
 
 import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { openBlockerRefs, openBlockers, itemName, ref, startHold, startRequest } from '@lar-factory/shared';
+import { blockerGroups, openBlockerRefs, openBlockers, itemName, ref, startHold, startRequest } from '@lar-factory/shared';
 import type { BoardData, Item, ModelChoice } from '@lar-factory/shared';
 import { Button } from '@lar-factory/ui/design-system/Button';
 import { ICON, kind as buttonKind } from '../buttons/button-kinds.tsx';
@@ -24,10 +24,13 @@ const startsAfter = (item: Item, short = false): string | null => openBlockerRef
 /** Lets a Start after button shrink inside its row, its label truncating while its mark stays. */
 const SHRINKS = 'min-w-0 max-w-full shrink';
 
-/** What the title says Start after waits for: every open blocker. */
+/** What the title says Start after waits for: every open blocker's work, and the user's mark on each unmet Dependency. */
 function waitsFor(item: Item): string {
-  const open = openBlockerRefs(item);
-  return `${open.join(', ')} ${open.length > 1 ? 'complete' : 'completes'}`;
+  const { work, dependencies } = blockerGroups(item);
+  return [
+    ...work ? [`${work.names} ${work.many ? 'complete' : 'completes'}`] : [],
+    ...dependencies ? [`you mark ${dependencies.names} met`] : [],
+  ].join(' and ');
 }
 
 /** Arms the item's start on `choice`, or disarms it with `null`; a refusal shows as a toast. */

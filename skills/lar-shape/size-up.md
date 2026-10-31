@@ -29,10 +29,11 @@ or corrects is another open question. Then:
   it and the branch for the brief's **Confirmed** and **Notes for the builder**.
 
 - **Another repository changes** (its role says it serves or uses what this
-  item changes): cross-repository planning needs Connections, which a later
-  Lar Factory release adds ([Structure](shared/issue-tracker/work-records.md#structure)).
-  Tell the user, shape only this repository's part, and note the other
-  repository's part as out of scope in the brief's **Notes for the builder**. This item is a build only if its own repository changes.
+  item changes, or the work needs a change there): route that part per
+  [Other repositories](shared/issue-tracker/work-records.md#other-repositories),
+  and keep shaping this repository's part while the user chooses. Name each
+  proposed build or recorded Dependency in the brief's **Notes for the
+  builder**. This item is a build only if its own repository changes.
 - **No open questions**: write the brief.
 - **Too big or unclear for one session**: [Concepts](concepts.md).
   Repository count never makes an item a concept.

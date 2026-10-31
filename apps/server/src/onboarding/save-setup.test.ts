@@ -1,7 +1,7 @@
 import { effectiveVocabulary } from '@lar-factory/shared';
 import { test, type TestContext } from 'vite-plus/test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readRepositoryList, saveOnboarding } from '../config/repository-config.ts';
@@ -33,7 +33,7 @@ test("saving onboarding's answers puts the repository on the board with them as 
     repo: 'maddec01/lar-web', projectId: 'lar-web', role: 'Web client', itemSource: { kind: 'issues' }, labels: [],
     domainDocs: { kind: 'private' }, skills: ['web-review'], ...effectiveVocabulary(),
     access: { 'push-branch': 'allowed', 'open-pr': 'allowed', 'publish-ticket': 'unverified', 'edit-ticket': 'unverified', 'tag-ticket': 'refused', 'comment-ticket': 'unverified', 'type-ticket': 'unverified', 'relate-ticket': 'unverified' },
-    consent: ['push-branch', 'open-pr'], paused: [], shared: {},
+    consent: ['push-branch', 'open-pr'], paused: [], shared: {}, connections: [],
     sources: { role: 'local', itemSource: 'local', labels: 'default', domainDocs: 'local', skills: 'local', vocabulary: 'default' },
   }]);
 });
@@ -80,4 +80,17 @@ test("an access read that fails saves the setup with every operation unverified"
   const dir = await dataDir(t);
   await saveSetup({ repo: 'maddec01/lar-web', ...ANSWERS }, dir, reads({ access: async () => { throw new Error('HTTP 502'); } }));
   assert.deepEqual(readRepositorySetups(dir)[0]!.consent, ['push-branch', 'open-pr', 'tag-ticket']);
+});
+
+test("saving onboarding's Connections pairs the repository with each other onboarded repository, once, on this Mac only", async (t) => {
+  const dir = await dataDir(t);
+  await saveSetup({ repo: 'maddec01/lar-api', ...ANSWERS, projectId: 'lar-api', role: 'API server', connections: [] }, dir, reads());
+  await saveSetup({ repo: 'maddec01/lar-web', ...ANSWERS, connections: ['maddec01/lar-api', 'maddec01/lar-ios'] }, dir, reads());
+  const connections = () => readRepositorySetups(dir).map((s) => [s.repo, s.connections]);
+  assert.deepEqual(connections(), [['maddec01/lar-api', ['maddec01/lar-web']], ['maddec01/lar-web', ['maddec01/lar-api']]]);
+  const file = JSON.parse(await readFile(join(dir, 'repository-settings.json'), 'utf8')) as { connections: unknown; repositories: { settings: object }[] };
+  assert.deepEqual(file.connections, [['maddec01/lar-api', 'maddec01/lar-web']]);
+  assert.ok(file.repositories.every((e) => !JSON.stringify(e.settings).includes('connections')), 'no Connection goes in the shared or local settings');
+  assert.deepEqual(await saveSetup({ repo: 'maddec01/lar-web', ...ANSWERS, connections: 'all' }, dir, reads()),
+    { status: 400, error: 'Send the repository, its T3 project, role, item source, domain-doc location, skills and write consent.' });
 });

@@ -1,5 +1,5 @@
-// The board's configuration: the onboarded repositories and the board-wide settings, both in REPOSITORY_LIST_FILE in
-// boardDataDir(), and each repository's Repository config, its .lar-factory.json read from its default branch. The
+// The board's configuration: the onboarded repositories, their Connections and the board-wide settings, all in
+// REPOSITORY_LIST_FILE in boardDataDir(), and each repository's Repository config, its .lar-factory.json read from its default branch. The
 // board leaves the old repositories.json and settings.json untouched.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -154,15 +154,68 @@ function saveEntry(entry: OnboardedRepository, replaces: string | null, dir: str
 /** The list's repositories on the board: those no longer onboarding. */
 export const onTheBoard = (list: readonly OnboardedRepository[]) => list.filter((e) => !e.onboarding);
 
-/** Writes the repository list with `content` and returns its list. */
+/**
+ * Writes the repository list with `content` and returns its list. A Connection naming a repository the list no longer
+ * has goes with it.
+ */
 export function writeListFile(dir: string, content: Record<string, unknown>): OnboardedRepository[] {
   const file = join(dir, REPOSITORY_LIST_FILE);
   mkdirSync(dir, { recursive: true });
+  const repos = (content.repositories as { repo: string }[]).map((e) => e.repo);
+  const written = 'connections' in content ? { ...content, connections: pairsIn(content.connections, repos) } : content;
   // Written beside it, then renamed over it, so repo-config.sh never reads half a file.
   const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(content, null, 2)}\n`);
+  writeFileSync(temp, `${JSON.stringify(written, null, 2)}\n`);
   renameSync(temp, file);
   return readListFile(file).list;
+}
+
+/** A Connection: two repositories in one order, so A,B and B,A are the same pair. */
+type Pair = [string, string];
+
+const pairOf = (a: string, b: string): Pair => a.toLowerCase() < b.toLowerCase() ? [a, b] : [b, a];
+
+/**
+ * The list file's `connections`, each pair of two of `repos` once, with their names as `repos` has them. A pair of
+ * another shape, or naming a repository `repos` doesn't, is left out.
+ */
+function pairsIn(value: unknown, repos: readonly string[]): Pair[] {
+  if (!Array.isArray(value)) return [];
+  const listed = (name: unknown) => typeof name === 'string' ? repos.find((repo) => sameRepo(repo, name)) : undefined;
+  const pairs: Pair[] = [];
+  for (const entry of value) {
+    if (!Array.isArray(entry) || entry.length !== 2) continue;
+    const [a, b] = entry.map(listed);
+    if (!a || !b || sameRepo(a, b)) continue;
+    const pair = pairOf(a, b);
+    if (!pairs.some(([x, y]) => sameRepo(x, pair[0]) && sameRepo(y, pair[1]))) pairs.push(pair);
+  }
+  return pairs;
+}
+
+/** The repositories `connections` pairs with `repo`, among the list's. */
+export function connectedTo(repo: string, connections: unknown, list: readonly OnboardedRepository[]): string[] {
+  return pairsIn(connections, list.map((e) => e.repo)).flatMap(([a, b]) => sameRepo(a, repo) ? [b] : sameRepo(b, repo) ? [a] : []);
+}
+
+/** The repositories the user connected to `repo`, each once. */
+export function readConnections(repo: string, dir = boardDataDir()): string[] {
+  const { raw, list } = readListFile(join(dir, REPOSITORY_LIST_FILE));
+  return connectedTo(repo, raw.connections, list);
+}
+
+/**
+ * Makes `connected` the repositories connected to `repo`, keeping one pair for each that is another repository on the
+ * board and dropping the rest of `repo`'s pairs. Throws for a repository that isn't on the board.
+ */
+export function saveConnections(repo: string, connected: readonly string[], dir = boardDataDir()): void {
+  const { raw, list } = readListFile(join(dir, REPOSITORY_LIST_FILE));
+  const board = onTheBoard(list).map((e) => e.repo);
+  const self = board.find((r) => sameRepo(r, repo));
+  if (!self) throw new Error(`${repo} is not on the board.`);
+  const others = board.filter((r) => !sameRepo(r, repo) && connected.some((c) => sameRepo(c, r)));
+  const kept = pairsIn(raw.connections, list.map((e) => e.repo)).filter((pair) => !pair.some((r) => sameRepo(r, repo)));
+  writeListFile(dir, { ...raw, connections: [...kept, ...others.map((other) => pairOf(self, other))] });
 }
 
 /** The list's repositories that are still onboarding, each with where it stopped. */

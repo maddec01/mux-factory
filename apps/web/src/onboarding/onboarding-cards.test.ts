@@ -55,7 +55,7 @@ test('Resume reopens the dialog on the stored step with the stored project', asy
   await mountPage(waiting(empty, 'detect'));
   await resume();
   expect(text(dialog()!.querySelector('[data-slot="modal-header"] h2'))).toBe('What we found');
-  expect(text(dialog()!.querySelector('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 7.');
+  expect(text(dialog()!.querySelector('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 8.');
   await settle(() => [...dialog()!.querySelectorAll<HTMLButtonElement>('[data-slot="modal-footer"] button')].find((b) => text(b).includes('Back'))!.click());
   const radio = dialog()!.querySelector('[data-choice="lar-web"] [role="radio"]')!;
   expect(radio.getAttribute('aria-checked')).toBe('true');

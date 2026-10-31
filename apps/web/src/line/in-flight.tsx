@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChevronDown, ChevronRight, GitPullRequest } from 'lucide-react';
-import { itemName, openBlockers, prLabel, repoKey, repoName } from '@lar-factory/shared';
+import { blockedText, itemName, openBlockers, prLabel, repoKey, repoName } from '@lar-factory/shared';
 import type { BoardData, Item } from '@lar-factory/shared';
 import { Badge } from '@lar-factory/ui/design-system/Badge';
 import { useBoardStore } from '../board/board-store.ts';
@@ -66,7 +66,7 @@ function FlightRow({ item, data }: { item: Item; data: BoardData }) {
             <span className="inline-flex flex-wrap items-center gap-x-1.5 text-[11px] text-(--muted-foreground)" data-meta>
               <span>{item.status} · {threadText(item)} · {repo}</span>
               {item.linkedPrs[0] && <span className="inline-flex items-center gap-1"><GitPullRequest className="size-3 text-(--st-done)" />{prLabel(item.linkedPrs[0])}</span>}
-              {blocked > 0 && <Badge tone="danger">blocked by {blocked}</Badge>}
+              {blocked > 0 && <Badge tone="danger" title={blockedText(item) ?? undefined}>blocked by {blocked}<span className="sr-only">. {blockedText(item)}</span></Badge>}
               <AzureFields azure={item.azure} />
             </span>
           </span>

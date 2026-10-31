@@ -150,12 +150,13 @@ whose processes the next thread stops when review ends. Otherwise finish in
 place.
 
 Work in another repository (a planner or implementer `needs <owner/repo>`, a
-failed check or a failed Verify) waits for Connections, which a later Lar
-Factory release adds (**Structure** in
-`<lar-build>/shared/issue-tracker/work-records.md`). Tell the user in chat what
-that repository needs and suggest capturing it on its board, and list it in
-the PR body's out-of-scope notes. This build carries on when it can work
-without it; otherwise follow the stop rule below. A slice holding that work is
+failed check or a failed Verify) is routed per **Other repositories** in
+`<lar-build>/shared/issue-tracker/work-records.md`. Tell the user in chat what
+that repository needs and offer the choices that section gives for it: a build
+there, which waits for their OK before you plan it, or onboarding or a
+Dependency for a repository that is not onboarded. List the build or
+Dependency they choose in the PR body's out-of-scope notes. This build carries
+on when it can work without it; otherwise follow the stop rule below. A slice holding that work is
 set aside (`lar-work set-aside`). A failed Verify is fixed in this build; a
 merged build is never reopened.
 

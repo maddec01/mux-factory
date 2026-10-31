@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STATUSES, decodePart, labelKind, labelStatuses, repoTag, sameRepo, statusLabel } from '@lar-factory/shared';
 import type { AzureWorkItem, Blocker, Item, LinkedPr } from '@lar-factory/shared';
-import { ReadProblem, TICKET_MATCHES, ticketNumberOf, type ItemSource, type ItemsRead } from '../items/item-source.ts';
+import { AccessLost, NotFound, ReadProblem, TICKET_MATCHES, ticketNumberOf, type ItemSource, type ItemsRead } from '../items/item-source.ts';
 import { createCooldown } from '../tools/cooldown.ts';
 import { runTool } from '../tools/run-tool.ts';
 import { missingTool, toolCommand } from '../tools/tools.ts';
@@ -100,6 +100,17 @@ export function problemOf(err: unknown): unknown {
   if (/az login/i.test(text)) return new ReadProblem('az is logged out.', 'az login');
   if (/azure-devops|misspelled or not recognized/i.test(text)) return new ReadProblem('az has no azure-devops extension.', 'az extension add --name azure-devops');
   return err;
+}
+
+/**
+ * An az read's error as Azure DevOps meant it: AccessLost when it refused the signed-in account, NotFound for a PR it
+ * can't find, or as problemOf gives it. An error that says "doesn't exist or you don't have permission" stays as it is.
+ */
+export function refusalOf(err: unknown): unknown {
+  const text = err instanceof Error ? err.message : String(err);
+  if (/TF400813|not authorized|Unauthorized|Forbidden/i.test(text)) return new AccessLost(text);
+  if (/TF401180/.test(text)) return new NotFound(text);
+  return problemOf(err);
 }
 
 /** Runs `use` on a temporary file holding `body` as JSON, for az's --in-file, and removes the file after. */
@@ -412,13 +423,15 @@ export function azureItems(repos: readonly string[], team: string, list: (calls:
       return raw ? { number: raw.id, title: field(raw, 'System.Title'), url: url(raw.id), text: field(raw, 'System.Description'), kind: labelKind(labelsOf(raw)) } : null;
     },
     async observeTicket(_repo, number) {
-      // workitemsbatch omits an id it can't find, so a missing work item is a confirmed not-found.
-      const [raw] = await workItems([number]);
-      if (!raw) return { state: 'not-found' };
-      const type = field(raw, 'System.WorkItemType');
-      const category = (await categories([type])).get(type)?.get(field(raw, 'System.State'));
-      const { assignee } = azureWorkItem(raw);
-      return { state: category === 'Completed' || category === 'Removed' ? 'closed' : 'open', ...assignee && { assignee } };
+      try {
+        // workitemsbatch omits an id it can't find, so a missing work item is a confirmed not-found.
+        const [raw] = await workItems([number]);
+        if (!raw) return { state: 'not-found' };
+        const type = field(raw, 'System.WorkItemType');
+        const category = (await categories([type])).get(type)?.get(field(raw, 'System.State'));
+        const { assignee } = azureWorkItem(raw);
+        return { state: category === 'Completed' || category === 'Removed' ? 'closed' : 'open', ...assignee && { assignee } };
+      } catch (err) { throw refusalOf(err); }
     },
   };
 }

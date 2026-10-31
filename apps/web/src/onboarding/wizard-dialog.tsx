@@ -20,6 +20,7 @@ const STEP_HELP: Record<StepId, string> = {
   source: "Choose the team whose work the board shows.",
   import: 'Ticked tickets with a status label or tag become private work with that Status. Their labels and tags stay as they are.',
   role: 'Say what this repository is to the others, such as the API server a client app uses.',
+  connections: 'Tick the other onboarded repositories this one works with, so refinement can propose work across them.',
   consent: 'Choose what the factory may write for you, within what your access allows.',
   docs: 'Choose where the glossary and ADRs that builds write go.',
   skills: "Choose the repository's skills that guide how builds write code.",

@@ -3,7 +3,7 @@ import type { TestContext } from 'vite-plus/test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { NOT_LANDED, SAMPLE_MODELS, recordBlockers, settleDecisions, startableEnv, startBoard, until, writeOnboarding } from './server-support.ts';
+import { NOT_LANDED, SAMPLE_MODELS, changeRecords, recordBlockers, settleDecisions, startableEnv, startBoard, until, writeOnboarding } from './server-support.ts';
 import type { Board } from './server-support.ts';
 import { openWorkRecords, workRecordsPath } from '@lar-factory/work-records';
 import { rawIssue } from '@lar-factory/shared/test/raw-items';
@@ -75,6 +75,48 @@ test('a refresh with a blocker incomplete starts nothing; once the last complete
     ['thread', 'start', 'project-factory', '--provider', 'claudeAgent_personal', '--model', 'claude-opus-5-5'],
   ]);
   assert.ok((await board.t3Calls())[0]!.includes('--worktree'), 'a build starts in its own worktree');
+});
+
+/** Records a Dependency on the server team holding the board's build #12, its ticket read as closed; returns its ID. */
+async function recordClosedDependency(board: Board): Promise<string> {
+  let dependencyId = '';
+  await changeRecords(board, (records) => {
+    let dependency = records.addDependency(board.id(12), { need: 'An export endpoint', owner: 'server team', ticket: 'maddec01/lar-server#40' });
+    dependency = records.addDependencyBlock(dependency.dependencyId, dependency.revision, board.id(12));
+    dependency = records.observeDependency(dependency.dependencyId, dependency.revision, { subject: 'maddec01/lar-server#40', kind: 'closed' });
+    dependencyId = dependency.dependencyId;
+  }, board.id(12), (item) => item.blockers.some((b) => b.dependency?.observation?.kind === 'closed'));
+  return dependencyId;
+}
+
+const markMet = async (board: Board, dependencyId: string, met: boolean) => {
+  const hold = (await board.board() as BoardData).items.flatMap((i) => i.blockers).find((b) => b.dependency?.dependencyId === dependencyId)!.dependency!;
+  return board.postSession({ itemId: board.id(12), dependencyId, revision: hold.revision, met }, '/api/dependency-met');
+};
+
+test('a Dependency whose ticket closed still holds Start and Start after until the user marks it met, which fires the armed start', async (t) => {
+  const { board } = await armableBoard(t, [build]);
+  const dependencyId = await recordClosedDependency(board);
+  const refused = await board.postSession({ itemId: board.id(12) }, '/api/start-build');
+  assert.equal(refused.status, 409);
+  assert.match((await refused.json()).error, /^Blocked by the Dependency on server team until you mark it met/);
+  assert.equal((await arm(board, board.id(12), OPUS)).status, 200);
+  assert.deepEqual((await read(board)).armed, { [board.id(12)]: { model: OPUS } }, 'the closed ticket alone starts nothing');
+  const marked = await markMet(board, dependencyId, true);
+  assert.equal(marked.status, 200);
+  const started = await until(board, (d) => !!d.startedBuilds?.[board.id(12)]);
+  assert.deepEqual(started.armed, {});
+});
+
+test('clearing the met mark holds the build again', async (t) => {
+  const { board } = await armableBoard(t, [build]);
+  const dependencyId = await recordClosedDependency(board);
+  assert.equal((await markMet(board, dependencyId, true)).status, 200);
+  const cleared = await markMet(board, dependencyId, false);
+  assert.equal(cleared.status, 200);
+  const item = (await cleared.json()).board.items.find((i: { id: string }) => i.id === board.id(12));
+  assert.deepEqual(item.blockers.map((b: { state: string; dependency: { met: unknown } }) => [b.state, b.dependency.met]), [['open', null]]);
+  assert.equal((await markMet(board, dependencyId, false)).status, 409, 'a stale revision is refused');
 });
 
 test("a Queued decision starts with today's Start once its blockers complete", async (t) => {

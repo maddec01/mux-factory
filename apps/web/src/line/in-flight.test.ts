@@ -79,7 +79,8 @@ test('line 1 shows the status glyph, the numbered title and muted meta: status, 
   const title = row('I_sample13').querySelector('[data-title]')!;
   expect([text(title), title.getAttribute('title')]).toEqual(['#140 Owner accounts', 'Owner accounts']);
   expect(row('I_sample13').querySelector('[data-glyph] svg'), 'the status glyph sits in the chevron\'s place').not.toBeNull();
-  expect([...meta('I_sample13').children].map(text)).toEqual(['Ready · Run finished · lar-server', 'blocked by 1']);
+  expect([...meta('I_sample13').children].map(text)).toEqual(['Ready · Run finished · lar-server', 'blocked by 1. Blocked by #202 until it completes']);
+  expect(text(meta('I_sample13').querySelector('.sr-only')), 'what blocks it is read out, not only a hover title').toBe('. Blocked by #202 until it completes');
   expect(meta('I_sample13').lastElementChild!.outerHTML).toContain('danger');
   expect([...meta('I_sample14').children].map(text), 'a linked PR follows the repository').toEqual(['In progress · Thread running · lar-apple', 'PR #33 (draft)']);
 });
@@ -105,6 +106,20 @@ test('the badge counts the blocked-by issues still open', async () => {
     .receive(withItem('I_sample13', { blockers: [] }, loose)));
   expect(meta('I_sample13').textContent, 'with no open issue listed, nothing blocks').not.toContain('blocked by');
   expect(text(startBuild())).toBe('Start build ▾');
+});
+
+test('a Dependency holds the badge until it is marked met, whatever its ticket shows, and the badge names it', async () => {
+  const dependency = (met: boolean) => ({ number: 40, repo: 'maddec01/lar-server', state: met ? 'closed' as const : 'open' as const, title: 'An export endpoint',
+    dependency: { dependencyId: 'dep-1', revision: 2, owner: 'server team', need: 'An export endpoint', ticket: 'maddec01/lar-server#40', named: [], evidence: '',
+      met: met ? { by: 'pedro', at: '2026-10-21T08:00:00Z' } : null, needsReview: false,
+      observation: { subject: 'maddec01/lar-server#40', kind: 'closed' as const, detail: null, observedAt: '2026-10-21T09:00:00Z', lastGood: null } } });
+  await mountPage(withItem('I_sample13', { blockers: [dependency(false)] }, loose));
+  const badge = [...meta('I_sample13').children].find((el) => text(el).startsWith('blocked by 1')) as HTMLElement;
+  expect(badge.title).toBe('Blocked by the Dependency on server team until you mark it met');
+  expect(text(badge.querySelector('.sr-only'))).toBe('. Blocked by the Dependency on server team until you mark it met');
+  await settle(async () => (await import('../board/board-store.ts')).useBoardStore.getState()
+    .receive(withItem('I_sample13', { blockers: [dependency(true)] }, loose)));
+  expect(meta('I_sample13').textContent).not.toContain('blocked by');
 });
 
 test('every row keeps line 2 on the dossiers\' columns at every width, its side action across both lines in the last column', async () => {

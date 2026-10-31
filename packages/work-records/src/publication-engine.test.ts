@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vite-plus/test';
+import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { effectiveVocabulary, type PublicationTicket } from '@lar-factory/shared';
 import type { PublicationSettings } from '@lar-factory/shared/publication-settings';
 import { openWorkRecords, type WorkRecords } from './work-records.ts';
@@ -571,4 +571,108 @@ it('keeps creation successful when verification is refused and resumes only insp
   expect(result.plan.results[0]?.attempt?.verification?.status).toBe('verified');
   expect(reopened.lastPublished(work.workId)[0]?.text).toBe(plan.tickets[0]?.body);
   expect(writes).toHaveLength(1);
+});
+
+describe("a Dependency's request", () => {
+  const request = (dependencyId: string, change = 'Add a name filter to the search endpoint.') => ({ dependencyId, title: 'Search endpoint name filter', change,
+    reason: 'The app finds saved searches by name.', contract: 'GET /searches?name= returns the matching searches.', checks: ['A name query returns only matching searches.'] });
+  async function blocked(records: WorkRecords) {
+    const work = await passing(records);
+    const dependency = records.addDependency(work.workId, { need: 'A name filter on the search endpoint.', owner: 'other/api', handover: 'Ask the API team for a name filter.' });
+    records.addDependencyBlock(dependency.dependencyId, dependency.revision, work.workId);
+    return { work, dependencyId: dependency.dependencyId };
+  }
+  // Only team/app is onboarded; the owning team's repository uses plain terms.
+  const onboarded = async (repo: string) => repo === 'team/app' ? settings(repo) : Promise.reject(new Error(`${repo} is not on this Mac's list.`));
+  const allowed = (repo: string) => repo === 'team/app';
+  const sources = (records: WorkRecords, workId: string) => records.publicationReadiness(workId).sources.map(({ workId, revision }) => ({ workId, revision }));
+
+  it('creates the request once, links the build to it and later yields only revised handover text', async () => {
+    const { records } = await fixture(); const { work, dependencyId } = await blocked(records); const { client, writes } = provider();
+    const engine = publicationEngine(records, { settings: onboarded, allowed, provider: client });
+    const plan = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)] });
+    expect(plan.tickets[1]).toMatchObject({ workId: dependencyId, dependencyOf: work.workId, destination: { repository: 'other/api' }, vocabulary: {}, settingsSnapshot: 'not-onboarded',
+      body: '## Change\n\nAdd a name filter to the search endpoint.\n\n## Reason\n\nThe app finds saved searches by name.\n\n## Contract\n\nGET /searches?name= returns the matching searches.\n\n## Delivery checks\n\n- A name query returns only matching searches.' });
+    expect(plan.operations.map((op) => op.kind)).toEqual(['create', 'create', 'relationship']);
+    records.approvePublication(work.workId, plan.planId, plan.revision, plan.digest, 'person');
+    const before = { holder: records.read(work.workId).revision, dependency: records.dependency(dependencyId).revision };
+    expect((await engine.execute(work.workId, plan.planId, 'cli')).successful).toHaveLength(3);
+    expect(writes.map((w) => w.kind)).toEqual(['create', 'create', 'relationship']);
+    expect(records.dependency(dependencyId)).toMatchObject({ ticket: 'other/api#2', revision: before.dependency + 1 });
+    expect(records.read(work.workId).revision).toBe(before.holder + 1);
+
+    await expect(engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)], delivery: { [work.workId]: 'handover', [dependencyId]: 'comment' }, replaces: plan.planId }))
+      .rejects.toThrow(/already has the request/);
+    const correction = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId, 'Add a name and owner filter.')],
+      delivery: { [work.workId]: 'handover' }, replaces: plan.planId });
+    expect(correction.operations).toEqual([]);
+    const handover = records.publicationHandover(work.workId, correction.planId);
+    expect(handover).toContain('Add a name and owner filter.\n\n## Reason');
+    expect(handover).toContain('## Requested by\n\n- https://github.com/team/app/issues/1');
+    expect(handover).toContain('Depends on https://github.com/other/api/issues/2');
+    expect(() => records.proposePublication(work.workId, records.read(work.workId).revision, { tickets: correction.tickets, sources: sources(records, work.workId), replaces: correction.planId,
+      operations: [{ kind: 'comment', operationId: 'again', ticketWorkId: dependencyId, dependsOn: [], content: 'Add a name and owner filter.' }] })).toThrow(/already has the request/);
+    expect(writes).toHaveLength(3);
+  });
+
+  it('falls back from a refused link to a Depends on line, then to handover, keeping the blocker and handover', async () => {
+    const { records } = await fixture(); const { work, dependencyId } = await blocked(records); const { client, writes } = provider();
+    client.relate = async () => { throw new PublicationRefused('HTTP 403 link refused.'); };
+    const engine = publicationEngine(records, { settings: onboarded, allowed, provider: client });
+    const plan = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)] });
+    records.approvePublication(work.workId, plan.planId, plan.revision, plan.digest, 'person');
+    expect((await engine.execute(work.workId, plan.planId, 'cli')).failed).toEqual([`blocked-by:${work.workId}:${dependencyId}`]);
+    const line = await engine.fallback(work.workId, plan.planId);
+    expect(line.operations.at(-1)).toMatchObject({ kind: 'textual-relationship', ticketWorkId: work.workId, content: 'Depends on https://github.com/other/api/issues/2' });
+    client.comment = async () => { throw new PublicationRefused('HTTP 403 comment refused.'); };
+    records.approvePublication(work.workId, line.planId, line.revision, line.digest, 'person');
+    expect((await engine.execute(work.workId, line.planId, 'cli')).failed).toHaveLength(1);
+    const handover = await engine.fallback(work.workId, line.planId);
+    expect(handover.results.every((result) => result.status === 'successful')).toBe(true);
+    expect(records.publicationHandover(work.workId, handover.planId)).toContain('Depends on https://github.com/other/api/issues/2');
+    expect(records.dependency(dependencyId)).toMatchObject({ blocks: [work.workId], handover: 'Ask the API team for a name filter.', met: null });
+    expect(writes.map((w) => w.kind)).toEqual(['create', 'create']);
+  });
+
+  it('recovers a lost creation response without posting the request twice', async () => {
+    const { records } = await fixture(); const { work, dependencyId } = await blocked(records); const { client, writes } = provider(); const create = client.create;
+    client.create = async (ticket) => { const made = await create(ticket); if (ticket.dependencyOf) throw new Error('Connection lost after creation.'); return made; };
+    const engine = publicationEngine(records, { settings: onboarded, allowed, provider: client });
+    const plan = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)] });
+    records.approvePublication(work.workId, plan.planId, plan.revision, plan.digest, 'person');
+    expect((await engine.execute(work.workId, plan.planId, 'cli')).uncertain).toEqual([`create:${dependencyId}`]);
+    expect((await engine.resume(work.workId, plan.planId, 'board')).uncertain).toHaveLength(1);
+    expect(records.dependency(dependencyId).ticket).toBeNull();
+    client.search = async () => [{ ticket: 'other/api#2', url: 'https://github.com/other/api/issues/2' }];
+    expect(await engine.reconcile(work.workId, plan.planId, 'person', [{ operationId: `create:${dependencyId}`, ticket: 'other/api#2' }])).toMatchObject({ uncertain: [] });
+    expect(records.dependency(dependencyId).ticket).toBe('other/api#2');
+    expect((await engine.resume(work.workId, plan.planId, 'board')).successful).toHaveLength(3);
+    expect(writes.map((w) => w.kind)).toEqual(['create', 'create', 'relationship']);
+  });
+
+  it("comments the request on the team's ticket with its onboarded Vocabulary only when chosen", async () => {
+    const { records } = await fixture(); const { work, dependencyId } = await blocked(records); const { client } = provider();
+    records.updateDependency(dependencyId, records.dependency(dependencyId).revision, { ticket: 'other/api#7' });
+    const engine = publicationEngine(records, { settings: async (repo) => settings(repo), allowed: () => true, provider: client });
+    const handover = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)] });
+    expect(handover.operations.filter((op) => op.ticketWorkId === dependencyId)).toEqual([]);
+    expect(handover.tickets[1]).toMatchObject({ destination: { ticket: 'other/api#7', url: 'https://github.com/other/api/issues/7' }, vocabulary: { build: { type: 'Task', labels: ['Search'] } } });
+    const posted = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)], delivery: { [dependencyId]: 'comment' }, replaces: handover.planId });
+    expect(posted.operations.map((op) => `${op.kind}:${op.ticketWorkId === dependencyId ? 'request' : 'build'}`)).toEqual(['create:build', 'comment:request', 'relationship:build']);
+  });
+
+  it("never writes to an onboarded owner whose settings can't be read", async () => {
+    const { records } = await fixture(); const { work, dependencyId } = await blocked(records); const { client, writes } = provider();
+    const listed = new Set(['team/app']);
+    const failing = async (repo: string) => repo === 'team/app' ? settings(repo) : Promise.reject(new Error('gh: HTTP 502 reading other/api.'));
+    const engine = publicationEngine(records, { settings: failing, allowed: (repo) => listed.has(repo), provider: client });
+    const plan = await engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)] });
+    records.approvePublication(work.workId, plan.planId, plan.revision, plan.digest, 'person');
+    listed.add('other/api');
+    await expect(engine.prepare(work.workId, { documents: [document(work.workId)], dependencies: [request(dependencyId)], replaces: plan.planId })).rejects.toThrow('HTTP 502');
+    const result = await engine.execute(work.workId, plan.planId, 'cli');
+    expect(result).toMatchObject({ current: false, successful: [] });
+    expect(result.reasons.join(' ')).toContain('HTTP 502');
+    expect(writes).toEqual([]);
+  });
 });

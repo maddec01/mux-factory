@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: repo-config.sh <owner/repo> | <Azure repository> | --list
+# Usage: repo-config.sh <owner/repo> | <Azure repository> | --list | --connections <repository>
 # <owner/repo> prints the GitHub repository's settings: its local overrides on this
 # Mac over its optional .lar-factory.json, the shared defaults read from its default
 # branch with gh, never from a checkout, over the built-in defaults (version 1,
@@ -18,10 +18,14 @@
 # repositories array of repository-settings.json in the board's data folder
 # (LAR_FACTORY_DATA_DIR when it names an absolute folder, else
 # ~/Library/Application Support/Lar Factory). A missing file means none: [].
+# --connections <repository> prints the onboarded repositories connected to that
+# onboarded one, as a JSON array named as the list names them. A Connection is a
+# pair in the file's connections array, matched case-insensitively from either end;
+# a pair naming a repository off the list is left out, as the board leaves it out.
 # Each error exits nonzero with its reason on stderr.
 set -euo pipefail
 
-usage="usage: repo-config.sh <owner/repo> | <Azure repository> | --list"
+usage="usage: repo-config.sh <owner/repo> | <Azure repository> | --list | --connections <repository>"
 # owner/name, each part of letters, digits, ".", "_" or "-", and neither "." nor "..". A jq regex: bash's has no lookahead.
 repo_form='^(?!\.\.?/)[A-Za-z0-9._-]+/(?!\.\.?\z)[A-Za-z0-9._-]+\z'
 # An Azure repository on the list: <org>/<project>/<repo> as its origin URL has them, each part as azure.sh's azure_repo
@@ -61,6 +65,28 @@ list() {
 
 if [[ $arg == --list ]]; then
     list
+    exit 0
+fi
+
+if [[ $arg == --connections ]]; then
+    repo=${2:-}
+    if [[ -z $repo ]]; then
+        echo "$usage" >&2
+        exit 1
+    fi
+    repositories=$(list)
+    if ! jq -e --arg repo "$repo" 'any(.[]; .repo | ascii_downcase == ($repo | ascii_downcase))' <<<"$repositories" >/dev/null; then
+        echo "$repo isn't onboarded." >&2
+        exit 1
+    fi
+    jq --arg repo "$repo" --argjson repos "$repositories" '
+        def listed($name): first($repos[] | .repo | select(ascii_downcase == ($name | ascii_downcase))) // null;
+        [(.connections // []) | if type == "array" then .[] else empty end
+            | select(type == "array" and length == 2 and all(.[]; type == "string"))
+            | map(listed(.)) | select(all(.[]; . != null) and (.[0] | ascii_downcase) != (.[1] | ascii_downcase))
+            | if (.[0] | ascii_downcase) == ($repo | ascii_downcase) then .[1]
+              elif (.[1] | ascii_downcase) == ($repo | ascii_downcase) then .[0] else empty end]
+        | unique_by(ascii_downcase) as $found | [$repos[] | .repo | select(IN($found[]))]' "$list_file"
     exit 0
 fi
 

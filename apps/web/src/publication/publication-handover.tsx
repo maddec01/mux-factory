@@ -23,7 +23,7 @@ export function PublicationHandover() {
     </div>
     {message && <p role="status" className="m-0 text-sm">{message}</p>}
     <Textarea aria-label="Complete markdown handover" readOnly value={state.handover} />
-    {state.pending!.plan.tickets.map((ticket) => <PublicationAttachment key={ticket.workId} targetWorkId={ticket.workId} title={ticket.title} />)}
+    {state.pending!.plan.tickets.filter((ticket) => !ticket.dependencyOf).map((ticket) => <PublicationAttachment key={ticket.workId} targetWorkId={ticket.workId} title={ticket.title} />)}
   </section>;
 }
 

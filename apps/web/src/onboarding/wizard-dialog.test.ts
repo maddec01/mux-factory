@@ -16,9 +16,9 @@ test('the dialog is a modal with a scrolling body, the step, its place and the p
   expect(dialog()!.getAttribute('aria-describedby'), 'its place describes it').toBe('onboarding-place');
   expect(inDialog('[data-slot="modal-body"]')).not.toBeNull();
   expect(text(inDialog('[data-slot="modal-header"] h2'))).toBe('Repository');
-  expect(text(inDialog('#onboarding-place'))).toBe('Set up a repository. Step 1 of 7.');
+  expect(text(inDialog('#onboarding-place'))).toBe('Set up a repository. Step 1 of 8.');
   expect(inDialog('[role="progressbar"]')!.getAttribute('aria-valuenow')).toBe('0');
-  expect(inDialog('[role="progressbar"]')!.getAttribute('aria-label'), 'the bar is named by its caption').toBe('0 of 7 done');
+  expect(inDialog('[role="progressbar"]')!.getAttribute('aria-label'), 'the bar is named by its caption').toBe('0 of 8 done');
 });
 
 test('Next is disabled until a project is picked, then shows What we found, and Back returns', async () => {
@@ -31,7 +31,7 @@ test('Next is disabled until a project is picked, then shows What we found, and 
   await settle(() => button('Next')!.click());
   expect(inDialog('[data-slot="modal-body"]')!.scrollTop).toBe(0);
   expect(text(inDialog('[data-slot="modal-header"] h2'))).toBe('What we found');
-  expect(text(inDialog('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 7.');
+  expect(text(inDialog('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 8.');
   expect(inDialog('[role="progressbar"]')!.getAttribute('aria-valuenow')).toBe('1');
   await settle(() => button('Back')!.click());
   expect(text(inDialog('[data-slot="modal-header"] h2'))).toBe('Repository');
@@ -43,10 +43,10 @@ test('a repository with files from an earlier setup counts Factory files too, an
   await openOnboarding([project('lar-web')], { '/api/onboarding/detect': { detection: files, error: null } });
   await settle(() => radio('lar-web').click());
   await settle(() => button('Next')!.click());
-  expect(text(inDialog('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 8.');
+  expect(text(inDialog('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 9.');
   const { useWizardStore } = await import('./wizard-store.ts');
   await settle(() => useWizardStore.getState().choose({ drop: ['agent-docs'] }));
-  expect(text(inDialog('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 9.');
+  expect(text(inDialog('#onboarding-place'))).toBe('Set up lar-web. Step 2 of 10.');
 });
 
 test('Add a repository after a close starts a new run', async () => {

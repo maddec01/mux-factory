@@ -358,3 +358,19 @@ test('cross-repository child links preview the parent write permission', async (
   await settle(() => usePublicationStore.getState().open('work'));
   expect(text($('[data-publication-operation]'))).toContain('Write repository: team/app. Permissions: relate-ticket: Refused');
 });
+
+test("the preview shows a Dependency's request, its link step and its handover, without offering to attach the team's ticket", async () => {
+  await mount();
+  const request = { workId: 'dependency-1', dependencyOf: 'work-0', title: 'Search endpoint name filter', body: '## Change\n\nAdd a name filter.', destination: { provider: 'github' as const, repository: 'other/api' }, vocabulary: {}, typeResolution: { candidates: [], selected: null } };
+  const operations: PublicationPlan['operations'] = [{ operationId: 'create:dependency-1', kind: 'create', ticketWorkId: 'dependency-1', dependsOn: [] },
+    { operationId: 'blocked-by:work-0:dependency-1', kind: 'relationship', ticketWorkId: 'work-0', relatedWorkId: 'dependency-1', relationship: 'blocked-by', dependsOn: ['create:dependency-1'] }];
+  const preview = { ...state, handover: '# Search endpoint name filter\n\n## Change\n\nAdd a name filter.\n', pending: { ...state.pending!, plan: { ...plan, tickets: [plan.tickets[0]!, request], operations } } };
+  fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(preview)));
+  await settle(() => usePublicationStore.getState().open('work'));
+  expect(text($('[data-dependency-request]'))).toContain('Their ticket gets this request once.');
+  expect(text($('[data-dependency-link]'))).toContain('"Depends on" line');
+  expect(text(document.body)).toContain("other/api. It isn't onboarded");
+  expect($$('[data-publication-operation]').map(text)[1]).toContain('blocked-by Search endpoint name filter');
+  expect(text(document.body)).toContain('Posted ticket URL for Search 0');
+  expect(text(document.body)).not.toContain('Posted ticket URL for Search endpoint name filter');
+});

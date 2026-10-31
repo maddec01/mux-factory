@@ -40,7 +40,7 @@ test('a repository with no Repository config and no local settings works from th
   assert.deepEqual(setupOf(dir), {
     repo: REPO, role: '', itemSource: { kind: 'issues' }, labels: [], domainDocs: { kind: 'private' }, skills: [], ...effectiveVocabulary(),
     access: { 'push-branch': 'unverified', 'open-pr': 'unverified', 'publish-ticket': 'unverified', 'edit-ticket': 'unverified', 'tag-ticket': 'unverified', 'comment-ticket': 'unverified', 'type-ticket': 'unverified', 'relate-ticket': 'unverified' },
-    consent: [], paused: [], shared: {},
+    consent: [], paused: [], shared: {}, connections: [],
     sources: { role: 'default', itemSource: 'default', labels: 'default', domainDocs: 'default', skills: 'default', vocabulary: 'default' },
   });
   // An Azure DevOps repository has no item source until a team is named.

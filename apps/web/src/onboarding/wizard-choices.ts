@@ -4,13 +4,13 @@
 // then what detection found; the user's choices replace either.
 
 import {
-  OFFERED_OPERATIONS, shownRepo, type Detected, type DomainDocLocation, type FactoryFile, type FactoryFileKind, type OnboardingChoices,
-  type Provider, type RepositoryItemSource, type RepositoryOperation, type SetupDetection, type SharedRepositorySettings,
+  OFFERED_OPERATIONS, sameRepo, shownRepo, type Detected, type DomainDocLocation, type FactoryFile, type FactoryFileKind, type OnboardingChoices,
+  type Provider, type RepoConfig, type RepositoryItemSource, type RepositoryOperation, type SetupDetection, type SharedRepositorySettings,
 } from '@lar-factory/shared';
 
 /** Every step by id, in order, with its title. */
 export const STEP_TITLES = {
-  project: 'Repository', detect: 'What we found', source: 'Item source', import: 'Work to import', role: 'Repository role',
+  project: 'Repository', detect: 'What we found', source: 'Item source', import: 'Work to import', role: 'Repository role', connections: 'Connections',
   consent: 'Write consent', docs: 'Domain docs', skills: 'Project skills', files: 'Factory files', edits: 'Repository edits',
 } as const;
 export type StepId = keyof typeof STEP_TITLES;
@@ -26,7 +26,7 @@ export const found = <T>(fact: Detected<T>): T | null => ('found' in fact ? fact
  */
 export function stepsOf(provider: Provider | null, detection: SetupDetection | null, choices: OnboardingChoices): StepId[] {
   const files = !!detection && !!found(detection.factoryFiles)?.length;
-  return ['project', 'detect', ...provider === 'Azure DevOps' ? ['source' as const] : [], 'import', 'role', 'consent', 'docs', 'skills',
+  return ['project', 'detect', ...provider === 'Azure DevOps' ? ['source' as const] : [], 'import', 'role', 'connections', 'consent', 'docs', 'skills',
     ...files ? ['files' as const] : [], ...files && choices.drop?.length ? ['edits' as const] : []];
 }
 
@@ -127,6 +127,34 @@ const FILES: Record<FactoryFileKind, { title: (paths: string[]) => string; cost:
   'agent-skills': { title: (paths) => `## Agent skills in ${paths.join(' and ')}`, cost: 'Agents read the factory\'s skills from it. Threads carry them anyway.' },
   'agent-docs': { title: (paths) => paths.join(', '), cost: 'Agents read the factory\'s tracker and domain notes there.' },
 };
+
+/** The other onboarded repositories to connect `repo` to, each with its Repository role. */
+export function connectionOptions(repo: string, onboarded: readonly RepoConfig[]): Option<string>[] {
+  return onboarded.filter((other) => !sameRepo(other.repo, repo))
+    .map((other) => ({ id: other.repo, value: other.repo, title: shownRepo(other.repo), cost: other.role || 'No Repository role yet.' }));
+}
+
+/** Text as its words, lowercase and spaced, so a repository's name matches with hyphens, underscores or spaces. */
+const words = (text: string) => ` ${text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+
+/** Whether `role` names the repository `repo` by its name. */
+const names = (role: string, repo: string) => words(role).includes(words(repo.split('/').at(-1)!));
+
+/**
+ * The Connections step's guesses: each other onboarded repository already connected to `repo`, or whose Repository
+ * role names `repo`, or that `role` names.
+ */
+function guessedConnections(repo: string, role: string, onboarded: readonly RepoConfig[]): string[] {
+  return connectionOptions(repo, onboarded).map((o) => onboarded.find((r) => r.repo === o.value)!)
+    .filter((other) => other.setup?.connections?.some((c) => sameRepo(c, repo)) || names(other.role, repo) || names(role, other.repo))
+    .map((other) => other.repo);
+}
+
+/** The repositories to connect `repo` to: the ones ticked, else the guesses, each another onboarded repository. */
+export function connectionsOf(repo: string, role: string, choices: OnboardingChoices, onboarded: readonly RepoConfig[]): string[] {
+  const offered = connectionOptions(repo, onboarded).map((o) => o.value);
+  return choices.connections ? offered.filter((r) => choices.connections!.some((c) => sameRepo(c, r))) : guessedConnections(repo, role, onboarded);
+}
 
 /** The factory files of an earlier setup, each one to keep or drop; dropping is Refused when the PR it needs is. */
 export function fileOptions(detection: SetupDetection): Option<FactoryFile>[] {

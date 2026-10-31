@@ -22,8 +22,11 @@ file and save it with `lar-work set-body <work ID> --revision N --body map --fil
 - <each glossary entry and ADR draft settled so far, with its decision's title>, or "none"
 
 ## Map
-<Mermaid flowchart of the concept's decisions and builds by title, edges for
-blockers, complete ones styled done. Redraw it whenever one changes.>
+<Mermaid flowchart of the concept's decisions, builds and Dependencies by
+title, edges for blockers, complete or met ones styled done. Redraw it whenever
+one changes. Below it, one bullet per unmet Dependency, which the board shows
+as holding the concept.>
+- <need>, from <owner>, blocks <build title>
 ```
 
 The user's original text stays in the record's initial context.
@@ -84,7 +87,9 @@ decision waits in Queued as in step 4, and each build in Ready for the board's
 Start build ([5. Start the build](start-build.md)). `lar-work completion` on
 this decision should now print it complete; fix what its reasons name. Map
 builds follow the build rules: each changes one repository, and work in another
-waits for Connections ([2. Size up](size-up.md)). A blocked build starts once
-its blockers are complete. The concept is complete once its Fog is gone and
+repository becomes a build there or a Dependency per
+[Other repositories](shared/issue-tracker/work-records.md#other-repositories).
+A blocked build starts once its blockers are complete and the user has marked
+each Dependency holding it met. The concept is complete once its Fog is gone and
 every decision and build it owns is complete
 ([Completion](shared/issue-tracker/work-records.md#completion)).

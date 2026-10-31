@@ -44,9 +44,14 @@ export const detection = (parts: Partial<SetupDetection> = {}): SetupDetection =
 
 export const dialog = () => $('[data-onboarding-dialog]');
 
-/** Mounts the empty board and opens the onboarding dialog from its empty state, with the onboarding calls `routes` names answered. */
-export async function openOnboarding(projects: ProjectChoice[] | { error: string }, routes: Record<string, Route> = {}): Promise<void> {
-  serve(empty, projects, { error: null }, 200, routes);
-  await mountPage(empty);
-  await settle(() => $<HTMLButtonElement>('[data-onboard]')!.click());
+/**
+ * Mounts `data`, the empty board unless it says otherwise, and opens the onboarding dialog, from the empty state when
+ * the board has no repository, with the onboarding calls `routes` names answered.
+ */
+export async function openOnboarding(projects: ProjectChoice[] | { error: string }, routes: Record<string, Route> = {}, data: BoardData = empty): Promise<void> {
+  serve(data, projects, { error: null }, 200, routes);
+  await mountPage(data);
+  if (!data.repos.length) return settle(() => $<HTMLButtonElement>('[data-onboard]')!.click());
+  const { useWizardStore } = await import('./wizard-store.ts');
+  await settle(() => useWizardStore.getState().start());
 }

@@ -194,6 +194,31 @@ describe('lar-work', { timeout: 30_000 }, () => {
     expect(await larWork(data, 'export', workId, '--to', join(to, 'missing'))).toMatchObject({ code: 1, stderr: expect.stringContaining("isn't a folder") });
   });
 
+  it('records a Dependency that holds a build until it is marked met, then replaces it with a build', async () => {
+    const data = tempDir();
+    const create = async (kind: string) => (await larWork(data, 'create', '--title', 'Work', '--repository', 'maddec01/lar', '--kind', kind)).record;
+    const [build, replacement] = [await create('build'), await create('build')];
+    const file = join(tempDir(), 'dependency.json');
+    writeFileSync(file, JSON.stringify({ need: 'A sign-in endpoint.', owner: 'acme/auth', pullRequests: ['acme/auth#9'], handover: 'Please add it.' }));
+    const { dependencyId } = (await larWork(data, 'add-dependency', build.workId, '--file', file)).record;
+    expect((await larWork(data, 'add-dependency-block', dependencyId, '--revision', '1', '--build', build.workId)).record).toMatchObject({ blocks: [build.workId] });
+    expect((await larWork(data, 'waiting-on', build.workId)).record).toEqual([{ dependencyId, reasons: ["It isn't marked met."] }]);
+    expect((await larWork(data, 'blockers', build.workId)).record).toMatchObject([{ dependencyId }]);
+
+    expect((await larWork(data, 'observe-dependency', dependencyId, '--revision', '2', '--subject', 'acme/auth#9', '--state', 'merged')).record).toMatchObject({ met: null });
+    expect((await larWork(data, 'waiting-on', build.workId)).record).toHaveLength(1);
+    expect((await larWork(data, 'mark-met', dependencyId, '--revision', '3', '--identity', 'pedro')).record).toMatchObject({ met: { by: 'pedro' } });
+    expect((await larWork(data, 'waiting-on', build.workId)).stdout).toBe('[]\n');
+    expect((await larWork(data, 'clear-met', dependencyId, '--revision', '4')).record).toMatchObject({ met: null });
+    writeFileSync(file, JSON.stringify({ contract: 'POST /sign-in.' }));
+    expect((await larWork(data, 'update-dependency', dependencyId, '--revision', '5', '--file', file)).record).toMatchObject({ contract: 'POST /sign-in.', revision: 6 });
+
+    expect((await larWork(data, 'replace-dependency', dependencyId, '--revision', '6', '--build', replacement.workId)).record).toMatchObject({ blocks: [], replacedBy: replacement.workId });
+    expect((await larWork(data, 'blockers', build.workId)).record).toMatchObject([{ workId: replacement.workId }]);
+    expect((await larWork(data, 'dependencies', build.workId)).record).toMatchObject([{ dependencyId, handover: 'Please add it.' }]);
+    expect(await larWork(data, 'dependency')).toMatchObject({ code: 2, stderr: expect.stringContaining('needs a Dependency ID') });
+  });
+
   it('reports usage mistakes before opening the database', async () => {
     const data = join(tempDir(), 'unused');
     expect(await larWork(data, 'frobnicate')).toMatchObject({ code: 2, stderr: expect.stringContaining('Unknown command "frobnicate"') });
@@ -204,7 +229,7 @@ describe('lar-work', { timeout: 30_000 }, () => {
   it('explains identifiers, reads, changes, structure and errors in its help', async () => {
     const help = await larWork(tempDir(), '--help');
     expect(help.code).toBe(0);
-    for (const heading of ['Identifiers', 'Reads', 'Changes', 'Structure', 'Completion', 'Content', 'Publication', 'Provider observations', 'Threads and launch intents', 'Retention and export', 'Errors']) expect(help.stdout).toContain(`\n${heading}\n`);
+    for (const heading of ['Identifiers', 'Reads', 'Changes', 'Structure', 'Completion', 'Content', 'Publication', 'Provider observations', 'Dependencies', 'Threads and launch intents', 'Retention and export', 'Errors']) expect(help.stdout).toContain(`\n${heading}\n`);
   });
 });
 

@@ -378,3 +378,23 @@ test('board inspection checks the parent repository for a GitHub child relations
   expect(read.pending).toMatchObject({ current: false, next: null, reasons: expect.arrayContaining([expect.stringContaining('team/parent needs separate consent')]) });
   expect(provider.relate).not.toHaveBeenCalled();
 });
+
+test("the board publishes a Dependency's request to a repository that isn't onboarded and links the build to it", async () => {
+  const { records, work, config, create, provider, request } = await fixture();
+  const dependency = records.addDependency(work.workId, { need: 'A name filter on the search endpoint.', owner: 'other/api' });
+  records.addDependencyBlock(dependency.dependencyId, dependency.revision, work.workId);
+  create.mockImplementation(async (ticket) => ticket.dependencyOf ? { ticket: 'other/api#3', url: 'https://github.com/other/api/issues/3' } : { ticket: 'team/app#12', url: 'https://github.com/team/app/issues/12' });
+  const publication = createPublication(records, { provider, allowed: (repo) => repo === 'team/app',
+    settings: async (repo) => repo === 'team/app' ? config : Promise.reject(new Error(`${repo} is not on this Mac's list.`)) });
+  const preview = await state(publication, 'prepare', { workId: work.workId, ...request, sources: records.publicationReadiness(work.workId).sources.map(({ workId, revision }) => ({ workId, revision })),
+    dependencies: [{ dependencyId: dependency.dependencyId, title: 'Search endpoint name filter', change: 'Add a name filter.', reason: 'The app finds searches by name.', contract: 'GET /searches?name=', checks: ['A name query matches.'] }] });
+  const plan = preview.pending!.plan;
+  expect(plan.operations.map((op) => op.kind)).toEqual(['create', 'create', 'relationship']);
+  expect(preview.settings.map((item) => item.setup.repo)).toEqual(['team/app']);
+  const result = await state(publication, 'approve', { workId: work.workId, planId: plan.planId, revision: plan.revision, digest: plan.digest });
+  expect(result.pending).toMatchObject({ failed: [], uncertain: [] });
+  expect(result.pending?.successful).toHaveLength(3);
+  expect(result.handover).toContain('# Search endpoint name filter');
+  expect(result.attachments).toMatchObject([{ workId: work.workId, ticket: 'team/app#12' }]);
+  expect(records.dependency(dependency.dependencyId).ticket).toBe('other/api#3');
+});

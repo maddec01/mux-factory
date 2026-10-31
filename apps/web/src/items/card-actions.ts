@@ -1,4 +1,4 @@
-// Queue, Back to List, Keep, Abandon and the ticket close after it, and Needs you's choices, from the item dialog: each posts to the board server, shows the result, and keeps
+// Queue, Back to List, Keep, Abandon and the ticket close after it, Needs you's choices and a Dependency's met mark, from the item dialog: each posts to the board server, shows the result, and keeps
 // keyboard focus in the dialog.
 
 import { flushSync } from 'react-dom';
@@ -133,4 +133,10 @@ export async function closeTicket(item: Item): Promise<void> {
 export async function resolveNeedsYou(itemId: string, choice: Exclude<NeedsYouOffer, 'set-aside'> | 'clear'): Promise<void> {
   if (!ready(itemId, 'data-needs-you')) return;
   await runAction(itemId, 'needs-you', { itemId, choice }, (result) => result.error ?? undefined);
+}
+
+/** Marks the Dependency holding the item met, or clears the mark; a failure stays in the dialog. */
+export async function markDependencyMet(itemId: string, dependencyId: string, revision: number, met: boolean): Promise<void> {
+  if (!ready(itemId, 'data-dependency-met')) return;
+  await runAction(itemId, 'dependency-met', { itemId, dependencyId, revision, met }, (result) => result.error ?? undefined);
 }

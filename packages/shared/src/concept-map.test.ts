@@ -67,3 +67,10 @@ test('a bullet that only says none is no fog and no decision', () => {
   }
   assert.deepEqual(parseConceptMap('## Fog\n- None of the apps poll yet\n').fog, ['None of the apps poll yet']);
 });
+
+test("the Map's bullets outside its flowchart are the unmet Dependencies holding the concept's builds", () => {
+  const body = '## Map\n```mermaid\nflowchart\n- not a Dependency\nb1[Resume] --> dep1{{Relay API}}\n```\n- A resume endpoint, from team/relay, blocks Resume\n* none\n\n## Fog\n- Two\n';
+  assert.deepEqual(parseConceptMap(body), {
+    destination: '', decisions: [], fog: ['Two'], dependencies: ['A resume endpoint, from team/relay, blocks Resume'],
+  });
+});

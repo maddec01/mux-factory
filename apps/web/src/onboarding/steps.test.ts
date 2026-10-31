@@ -5,9 +5,9 @@
 // and the PR's changes to approve. Finish: the repository on the board, with the PR it opened.
 
 import { expect, test } from 'vite-plus/test';
-import type { ImportableTicket, SetupDetection } from '@lar-factory/shared';
+import type { BoardData, ImportableTicket, RepoConfig, SetupDetection } from '@lar-factory/shared';
 import { $, fetchMock, mountPage, sample, settle, text } from '../../test/support.ts';
-import { detection, dialog, openOnboarding, posted, project, serve, type Route } from './onboarding-support.ts';
+import { detection, dialog, empty, openOnboarding, posted, project, serve, type Route } from './onboarding-support.ts';
 
 const rows = () => [...dialog()!.querySelectorAll<HTMLElement>('[data-choice]')];
 const row = (name: string) => rows().find((r) => r.dataset.choice === name)!;
@@ -148,9 +148,9 @@ const routes = (found: SetupDetection = detection(), tickets: ImportableTicket[]
   '/api/onboarding/setup': { error: null }, ...more,
 });
 
-/** Opens the dialog with lar-web, picks it and presses Next until the step titled `title`. */
-async function openAt(title: string, calls: Record<string, Route> = routes(), chosen = project('lar-web')): Promise<void> {
-  await openOnboarding([chosen], calls);
+/** Opens the dialog over `data` with lar-web, picks it and presses Next until the step titled `title`. */
+async function openAt(title: string, calls: Record<string, Route> = routes(), chosen = project('lar-web'), data?: BoardData): Promise<void> {
+  await openOnboarding([chosen], calls, data);
   await settle(() => radio(chosen.name).click());
   for (let i = 0; i < 10 && heading() !== title; i++) {
     if (heading() === 'Repository role' && !body().querySelector<HTMLInputElement>('input')!.value) await type(body().querySelector('input')!, 'Web client');
@@ -283,6 +283,34 @@ test("an existing repository's factory files are kept by default, and dropping i
   expect(optionBadges('config')).toEqual(['Refused']);
   expect(text(option('config'))).toContain("Refused: your access can't open the PR that drops it.");
   expect(footer('Finish')).toBeDefined();
+});
+
+/** An onboarded repository with `role`, connected to `connections`. */
+const onboarded = (name: string, role: string, connections: string[] = []) =>
+  ({ repo: `maddec01/${name}`, role, labels: [], setup: { connections } }) as unknown as RepoConfig;
+
+test('Connections lists only the other onboarded repositories, ticking the ones their roles relate, and saves the ticked ones on Finish', async () => {
+  const repos = [onboarded('lar-api', 'API server lar-web talks to'), onboarded('lar-docs', 'Product docs site'), onboarded('lar-ios', 'iOS app', ['maddec01/lar-web'])];
+  await openAt('Connections', routes(), project('lar-web'), { ...empty, repos });
+  expect([...body().querySelectorAll<HTMLElement>('[data-option]')].map((o) => o.dataset.option)).toEqual(['maddec01/lar-api', 'maddec01/lar-docs', 'maddec01/lar-ios']);
+  expect(text(option('maddec01/lar-docs'))).toContain('Product docs site');
+  const ticked = () => ['maddec01/lar-api', 'maddec01/lar-docs', 'maddec01/lar-ios'].filter((id) => box(id).getAttribute('aria-checked') === 'true' || (box(id) as HTMLInputElement).checked);
+  expect(ticked(), 'the role that names lar-web, and the pair kept from an earlier onboarding').toEqual(['maddec01/lar-api', 'maddec01/lar-ios']);
+  await settle(() => box('maddec01/lar-ios').click());
+  await settle(() => box('maddec01/lar-docs').click());
+  expect(posted('/api/onboarding/setup'), 'nothing saves until the user confirms').toEqual([]);
+  for (let i = 0; i < 5 && !footer('Finish'); i++) await settle(() => footer('Next')!.click());
+  await settle(() => footer('Finish')!.click());
+  expect(posted('/api/onboarding/setup').map((b) => b.connections)).toEqual([['maddec01/lar-api', 'maddec01/lar-docs']]);
+});
+
+test('Connections says so when no other repository is onboarded, offering nothing to tick', async () => {
+  await openAt('Connections');
+  expect(body().querySelector('[data-option]')).toBeNull();
+  expect(text(body())).toContain('No other repository is on the board yet');
+  for (let i = 0; i < 5 && !footer('Finish'); i++) await settle(() => footer('Next')!.click());
+  await settle(() => footer('Finish')!.click());
+  expect(posted('/api/onboarding/setup').map((b) => b.connections)).toEqual([[]]);
 });
 
 const CHANGES = [{ kind: 'agent-skills' as const, path: 'AGENTS.md', removed: true as const, preview: { before: '# Agents\n## Agent skills\n<b>x</b>', after: '# Agents\n' } }];

@@ -127,6 +127,23 @@ describe('markdown export', () => {
     expect(readFileSync(temporary, 'utf8')).toBe('mine');
   });
 
+  it("writes each Dependency the record holds, with its contract, references, met mark and handover", async () => {
+    const records = await open();
+    const build = lar(records, 'build');
+    const added = records.addDependency(build.workId, {
+      need: 'A sign-in endpoint.', owner: 'acme/auth', contract: 'POST /sign-in.', evidence: 'The PR merges.', ticket: 'acme/auth#5',
+      pullRequests: ['acme/auth#9'], handover: 'Please add it.',
+    });
+    records.markDependencyMet(added.dependencyId, 1, 'pedro');
+    const to = tempDir();
+
+    expect(exportMarkdown(records, build.workId, to)).toEqual([join(to, 'dependency-acme-auth-a-sign-in-endpoint.md')]);
+    const text = readFileSync(join(to, 'dependency-acme-auth-a-sign-in-endpoint.md'), 'utf8');
+    for (const part of ['# acme/auth: A sign-in endpoint.', 'POST /sign-in.', 'The PR merges.', 'acme/auth#5', 'acme/auth#9', 'Marked met by pedro', 'Please add it.']) {
+      expect(text).toContain(part);
+    }
+  });
+
   it('refuses a record with nothing to export', async () => {
     const records = await open();
     const build = lar(records, 'build');

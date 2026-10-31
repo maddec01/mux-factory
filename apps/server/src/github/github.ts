@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DONE_WINDOW_MS, buildSubIssueSearches, labelKind, normalizeItems, readBuilds, rawBuildPrs, rawDossiers, refKey } from '@lar-factory/shared';
 import type { Item, PickedTicket, RawItem, RawLinkedPr, Searched, TicketMatch } from '@lar-factory/shared';
-import type { LegacyChild, TicketObservation } from '../items/item-source.ts';
+import { AccessLost, NotFound, type LegacyChild, type TicketObservation } from '../items/item-source.ts';
 import { createCooldown } from '../tools/cooldown.ts';
 import { runTool } from '../tools/run-tool.ts';
 import { missingTool, toolCommand } from '../tools/tools.ts';
@@ -583,9 +583,22 @@ export async function createPr(repo: string, pr: { base: string; head: string; t
   return url;
 }
 
-/** Whether a PR, by its URL, is open, merged or closed without merging. */
+/**
+ * A gh read's error as GitHub meant it: AccessLost when it refused the signed-in account, NotFound for a PR it can't
+ * resolve, or as it is. A repository it can't resolve may be deleted or hidden, so that error stays as it is.
+ */
+function refusalOf(err: unknown): unknown {
+  const text = message(err);
+  if (/HTTP 40[13]\b|Resource not accessible|SAML enforcement/i.test(text)) return new AccessLost(text);
+  if (/Could not resolve to a PullRequest/i.test(text)) return new NotFound(text);
+  return err;
+}
+
+/** Whether a PR, by its URL, is open, merged or closed without merging. Throws NotFound or AccessLost when GitHub says so. */
 export async function prState(url: string, run: (args: string[]) => Promise<string> = gh): Promise<'OPEN' | 'MERGED' | 'CLOSED'> {
-  const state = (await run(['pr', 'view', url, '--json', 'state', '--jq', '.state'])).trim();
+  let state: string;
+  try { state = (await run(['pr', 'view', url, '--json', 'state', '--jq', '.state'])).trim(); }
+  catch (err) { throw refusalOf(err); }
   if (state !== 'OPEN' && state !== 'MERGED' && state !== 'CLOSED') throw new Error(`gh pr view sent no PR state for ${url}: ${state}`);
   return state;
 }
@@ -670,7 +683,7 @@ export async function observeIssue(repo: string, number: number, run: (args: str
     issue = JSON.parse(await run(['issue', 'view', String(number), '-R', repo, '--json', 'state,assignees']));
   } catch (err) {
     if (/Could not resolve to an issue/.test(message(err))) return { state: 'not-found' };
-    throw err;
+    throw refusalOf(err);
   }
   const assignee = issue.assignees.map((a) => a.login).sort().join(', ');
   return { state: issue.state === 'OPEN' ? 'open' : 'closed', ...assignee && { assignee } };

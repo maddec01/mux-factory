@@ -1,7 +1,7 @@
 // The body of each onboarding step, which the dialog shows one at a time. The T3 project step lists T3's projects.
 // What we found lists each detected fact, or Refused with why. Each question step shows where its default came from,
 // then its options, each with one cost line and Refused where access blocks it, then the lines naming the choices it
-// leaves for later. Work to import lists the tickets with a status label or tag, with what each one needs settled.
+// leaves for later. Connections lists the other onboarded repositories, ticking the ones it guesses from their roles. Work to import lists the tickets with a status label or tag, with what each one needs settled.
 // Repository edits lists what the PR changes, with each file's contents, and asks for approval. Once Finish saves, the
 // dialog says the repository is on the board, with the PR it opened.
 
@@ -22,7 +22,7 @@ import { useBoardStore } from '../board/board-store.ts';
 import { kind } from '../buttons/button-kinds.tsx';
 import { Choice, Field, Group } from './setup-fields.tsx';
 import {
-  answerProblem, answersOf, consentOptions, docsOptions, fileOptions, found, laterLines, operationTitle, originOf, skillOptions, sourceOptions,
+  answerProblem, answersOf, connectionOptions, connectionsOf, consentOptions, docsOptions, fileOptions, found, laterLines, operationTitle, originOf, skillOptions, sourceOptions,
   type Answers, type Option, type StepId,
 } from './wizard-choices.ts';
 import { type Creating, type Run, detectedOf, ticketProblem, unpickable, useWizardStore } from './wizard-store.ts';
@@ -346,6 +346,26 @@ function RoleStep({ run }: { run: Run }) {
   );
 }
 
+function ConnectionsStep({ run }: { run: Run & { repo: string } }) {
+  const read = useAnswers(run);
+  const choose = useWizardStore((s) => s.choose);
+  const onboarded = useBoardStore((s) => s.data.repos);
+  if (!read) return <DetectionPending />;
+  const options = connectionOptions(run.repo, onboarded);
+  if (!options.length) return <p className="m-0 text-sm text-base-700">No other repository is on the board yet, so there is nothing to connect.</p>;
+  const ticked = connectionsOf(run.repo, read.answers.role, run.choices, onboarded);
+  return (
+    <div className="grid gap-4">
+      <p data-origin className="m-0 flex items-center gap-2 text-xs text-base-700">
+        {run.choices.connections ? <Badge tone="accent">Changed</Badge> : <><Badge>Guessed</Badge> Ticked from each repository's role and earlier Connections. Change it if it's wrong.</>}
+      </p>
+      <SomeOf legend="Related repositories" options={options} ticked={(o) => ticked.includes(o.value)}
+        onTick={(o, on) => choose({ connections: on ? [...ticked, o.value] : ticked.filter((r) => r !== o.value) })} />
+      <p className="m-0 text-xs text-base-700">Connections stay on this Mac. They grant no access: a build in a connected repository still waits for your OK.</p>
+    </div>
+  );
+}
+
 function ConsentStep({ run }: { run: Run }) {
   const read = useAnswers(run);
   const choose = useWizardStore((s) => s.choose);
@@ -519,6 +539,7 @@ function Step({ run }: { run: Run }) {
     case 'source': return <SourceStep run={run} />;
     case 'import': return <ImportStep run={run} />;
     case 'role': return <RoleStep run={run} />;
+    case 'connections': return run.repo ? <ConnectionsStep run={{ ...run, repo: run.repo }} /> : null;
     case 'consent': return <ConsentStep run={run} />;
     case 'docs': return <DocsStep run={run} />;
     case 'skills': return <SkillsStep run={run} />;

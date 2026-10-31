@@ -14,7 +14,8 @@ import { PublicationConflict, publicationEngine, type PreparePublication, type R
 import { publicationPr } from './publication-pr.ts';
 import {
   openWorkRecords, readRetention, WorkRecordError, workRecordsPath, writeRetention, type Body, type BuildPhase, type FindingDisposition,
-  type NewObservation, type NewReviewRound, type Observed, type ReviewAxis, type WorkKind, type WorkRecords,
+  type DependencyChange, type DependencyObservationKind, type NewDependency, type NewObservation, type NewReviewRound, type Observed,
+  type ReviewAxis, type WorkKind, type WorkRecords,
 } from './work-records.ts';
 
 const HELP = `Usage: lar-work <command> [options]
@@ -70,7 +71,8 @@ Structure
                                     Record that the work waits on B.
   remove-blocker <work-id> --revision N --blocker B
   children <work-id>                Print the records it owns.
-  blockers <work-id>                Print the records it waits on.
+  blockers <work-id>                Print the records it waits on, then the unmet
+                                    Dependencies holding it.
   dependents <work-id>              Print the records that wait on it.
 
 Completion
@@ -80,11 +82,14 @@ Completion
   it is finished. A decision completes once its answer and domain drafts are
   recorded and its concept's map is written after them. A concept completes once
   its Fog is gone and every decision and build it owns, except set-aside ones, is
-  complete. Work can start once each of its blockers is complete.
+  complete, and a build stays incomplete while an unmet Dependency holds it.
+  Work can start once each of its blockers is complete and no unmet Dependency
+  holds it.
   completion <work-id>              Print whether the record is complete and each
                                     reason it isn't.
-  waiting-on <work-id>              Print its blockers that aren't complete, with
-                                    the reasons.
+  waiting-on <work-id>              Print its blockers that aren't complete, then
+                                    the unmet Dependencies holding it, with the
+                                    reasons. Work can start once this prints [].
   set-fog <work-id> --revision N --fog gone|remaining
                                     Record whether a concept's Fog is gone.
   finish <work-id> --revision N     Record that a slice merged into its build branch.
@@ -151,6 +156,14 @@ Publication
                                     domainNotes and relatedTickets (HTTP URLs).
                                     Lists may be empty when nothing applies. Use team
                                     language; private bodies are never copied blindly.
+                                    Optional dependencies list requests for the teams
+                                    that own the work's Dependencies: dependencyId,
+                                    title, change, reason, contract and checks. A
+                                    request is created on the owner's repository, or
+                                    commented on its ticket when delivery says
+                                    comment. Once posted, later plans give revised
+                                    handover text only. Builds a Dependency blocks
+                                    link to its ticket as blocked by it.
   inspect-publication <work-id> --plan P
                                     Recheck sources, settings and pending provider text.
   execute-publication <work-id> --plan P --identity I
@@ -244,6 +257,47 @@ Provider observations
                                     Record that a read failed with reason F.
   observations <work-id>            Print the ticket's observation, then the PR's.
 
+Dependencies
+  A Dependency is a change the work needs in a repository you don't work on,
+  delivered by the team that owns it. It lives inside one work record, has its
+  own ID and revision, and holds only the builds it blocks, each in the same
+  work tree as its record. Each block change bumps the build's revision too.
+  Only you decide it is met: observations of its ticket and PRs never set or
+  clear the mark, and never delete it or its handover. An observation that
+  changes after you marked it met flags it for review and leaves it met; marking
+  it met again clears the flag. Retention keeps a record while it holds a
+  Dependency or one blocks it. Dependency commands take a Dependency ID.
+  add-dependency <work-id> --file F Add a Dependency from the JSON in F: {"need",
+                                    "owner", "contract"?, "evidence"?, "ticket"?,
+                                    "pullRequests"?: [...], "handover"?}. need says
+                                    what is needed and why; owner names the owning
+                                    repository or team. Prints its Dependency ID.
+  dependencies <work-id>            Print the Dependencies the record holds.
+  dependency <dependency-id>        Print one Dependency.
+  update-dependency <dependency-id> --revision N --file F
+                                    Change the fields in the JSON in F; a null
+                                    ticket removes it. Observations of a ticket or
+                                    PR it no longer names are dropped.
+  add-dependency-block <dependency-id> --revision N --build B
+                                    Record that the Dependency holds the build B.
+  remove-dependency-block <dependency-id> --revision N --build B
+  observe-dependency <dependency-id> --revision N --subject S --state K
+                     [--detail X]
+                                    Record the latest read of S, its ticket or one
+                                    of its PRs. K is open, closed, merged, reopened,
+                                    deleted, access-lost or read-failed; X is what
+                                    the provider said, such as why a read failed.
+                                    A failed read or lost access keeps the last
+                                    read that answered beside it.
+  mark-met <dependency-id> --revision N --identity I
+                                    Record that you, I, decided it is met.
+  clear-met <dependency-id> --revision N
+  replace-dependency <dependency-id> --revision N --build B
+                                    Make every build it holds wait on the build B
+                                    instead, all in one change. The Dependency and
+                                    its met mark stay. Without this, onboarding its
+                                    repository later leaves the Dependency as it is.
+
 Threads and launch intents
   A thread ID is T3's. A launch intent is recorded before the board asks T3 to
   start a thread, and resolved once T3 answers, so a restart finds the start
@@ -274,11 +328,12 @@ Retention and export
                                     their bodies, review rounds, threads and intents.
                                     Prints the deleted work IDs, and each due record
                                     kept because a kept record it owns or that waits
-                                    on it still needs it, with the reason.
-  export <work-id> --to D           Write the record's brief, decision or map, and a
-                                    concept's decisions, as markdown files in the
-                                    existing folder D, named from each one's first
-                                    heading. Prints the paths. The files are a copy
+                                    on it still needs it, or a Dependency it holds or
+                                    that blocks it, with the reason.
+  export <work-id> --to D           Write the record's brief, decision or map, its
+                                    Dependencies, and a concept's decisions, as
+                                    markdown files in the existing folder D, named
+                                    from each one's first heading. Prints the paths. The files are a copy
                                     to read; changing them changes no record.
 
 Options
@@ -303,8 +358,11 @@ const TAKES_WORK_ID = ['read', 'context', 'update', 'attach-ticket', 'set-aside'
   'review-rounds', 'observe', 'observe-failure', 'observations', 'add-thread', 'threads', 'record-intent', 'resolve-intent', 'export',
   'gate', 'record-gate', 'publication-readiness', 'propose-publication', 'publication', 'publications', 'approve-publication',
   'pending-publication', 'claim-publication', 'record-publication-outcome', 'resolve-publication-outcome', 'record-publication-evidence',
-  'publication-evidence', 'last-published', 'publication-handover', 'attach-publication-url', 'publication-attachment'];
-const COMMANDS = ['create', 'import', 'list', 'intents', 'retention', 'hidden', 'delete-expired', ...TAKES_WORK_ID];
+  'publication-evidence', 'last-published', 'publication-handover', 'attach-publication-url', 'publication-attachment',
+  'add-dependency', 'dependencies'];
+const TAKES_DEPENDENCY_ID = ['dependency', 'update-dependency', 'add-dependency-block', 'remove-dependency-block', 'observe-dependency', 'mark-met',
+  'clear-met', 'replace-dependency'];
+const COMMANDS = ['create', 'import', 'list', 'intents', 'retention', 'hidden', 'delete-expired', ...TAKES_WORK_ID, ...TAKES_DEPENDENCY_ID];
 
 const OPTIONS = {
   plan: { type: 'string' },
@@ -322,6 +380,9 @@ const OPTIONS = {
   revision: { type: 'string' },
   parent: { type: 'string' },
   blocker: { type: 'string' },
+  build: { type: 'string' },
+  subject: { type: 'string' },
+  detail: { type: 'string' },
   body: { type: 'string' },
   file: { type: 'string' },
   phase: { type: 'string' },
@@ -368,13 +429,13 @@ function readInput(values: Values): string {
   }
 }
 
-/** A publication request in JSON, validated by the database writer. */
-function readJson(values: Values): unknown {
+/** A publication request or Dependency in JSON, named as `what`, validated by the database writer. */
+function readJson(values: Values, what = 'publication input'): unknown {
   try {
     return JSON.parse(readInput(values)) as unknown;
   } catch (error) {
     if (error instanceof WorkRecordError) throw error;
-    throw new WorkRecordError('invalid', `The publication input in ${values.file} isn't JSON.`);
+    throw new WorkRecordError('invalid', `The ${what} in ${values.file} isn't JSON.`);
   }
 }
 
@@ -403,7 +464,7 @@ function retention(values: Values): unknown {
   }, values['data-dir']);
 }
 
-/** Runs `command`; `workId` is set for the commands that take one. A string result prints as it is, anything else as JSON. */
+/** Runs `command`; `workId` is the work ID or Dependency ID for the commands that take one. A string result prints as it is, anything else as JSON. */
 async function run(records: WorkRecords, command: string, workId: string | undefined, values: Values): Promise<unknown> {
   const revision = () => Number(need(values, 'revision'));
   const status = values.status as Status | undefined;
@@ -506,7 +567,7 @@ async function run(records: WorkRecords, command: string, workId: string | undef
     case 'children':
       return records.children(workId!);
     case 'blockers':
-      return records.blockers(workId!);
+      return [...records.blockers(workId!), ...records.unmetDependencies(workId!)];
     case 'dependents':
       return records.dependents(workId!);
     case 'completion':
@@ -562,6 +623,27 @@ async function run(records: WorkRecords, command: string, workId: string | undef
       const outcome = values.thread !== undefined ? { threadId: values.thread } : { failure: values.failure! };
       return records.resolveLaunchIntent(workId!, revision(), need(values, 'intent'), outcome);
     }
+    case 'add-dependency':
+      return records.addDependency(workId!, readJson(values, 'Dependency') as NewDependency);
+    case 'dependencies':
+      return records.dependencies(workId!);
+    case 'dependency':
+      return records.dependency(workId!);
+    case 'update-dependency':
+      return records.updateDependency(workId!, revision(), readJson(values, 'Dependency change') as DependencyChange);
+    case 'add-dependency-block':
+      return records.addDependencyBlock(workId!, revision(), need(values, 'build'));
+    case 'remove-dependency-block':
+      return records.removeDependencyBlock(workId!, revision(), need(values, 'build'));
+    case 'observe-dependency':
+      return records.observeDependency(workId!, revision(),
+        { subject: need(values, 'subject'), kind: need(values, 'state') as DependencyObservationKind, detail: values.detail });
+    case 'mark-met':
+      return records.markDependencyMet(workId!, revision(), need(values, 'identity'));
+    case 'clear-met':
+      return records.clearDependencyMet(workId!, revision());
+    case 'replace-dependency':
+      return records.replaceDependencyWithBuild(workId!, revision(), need(values, 'build'));
     case 'hidden':
       return records.hidden(readRetention(values['data-dir']));
     case 'delete-expired':
@@ -590,8 +672,10 @@ async function main(args: string[]): Promise<number> {
   try {
     if (extra.length) throw new UsageError(`Unexpected arguments: ${extra.join(' ')}.`);
     if (!COMMANDS.includes(command)) throw new UsageError(`Unknown command "${command}".`);
-    if (TAKES_WORK_ID.includes(command) !== (workId !== undefined)) {
-      throw new UsageError(workId === undefined ? `${command} needs a work ID.` : `${command} takes no work ID.`);
+    const takesId = TAKES_WORK_ID.includes(command) || TAKES_DEPENDENCY_ID.includes(command);
+    if (takesId !== (workId !== undefined)) {
+      const id = TAKES_DEPENDENCY_ID.includes(command) ? 'a Dependency ID' : 'a work ID';
+      throw new UsageError(workId === undefined ? `${command} needs ${id}.` : `${command} takes no work ID.`);
     }
     if (command === 'retention') {
       process.stdout.write(`${JSON.stringify(retention(values), null, 2)}\n`);

@@ -1,27 +1,32 @@
 // Node entry for both the installed command and board server. Private records remain authoritative.
 import { randomUUID } from 'node:crypto';
-import { decodePart, isRecord, onAzure, publicationConsents, publicationWriteTicket, resolveVocabulary, type PublicationContent, type PublicationDocument, type PublicationOperation, type PublicationPending, type PublicationPlan,
-  type PublicationTicket, type RepositoryOperation } from '@lar-factory/shared';
-import { readPublicationSettings, type PublicationSettings } from '@lar-factory/shared/publication-settings';
+import { decodePart, isRecord, onAzure, publicationConsents, sameRepo, publicationWriteTicket, resolveVocabulary, type PublicationContent, type PublicationDependencyDocument, type PublicationDocument, type PublicationOperation,
+  type PublicationPending, type PublicationPlan, type PublicationTicket, type RepositoryOperation } from '@lar-factory/shared';
+import { readPublicationSettings, readRepositorySetups, type PublicationSettings } from '@lar-factory/shared/publication-settings';
 import { prepareText, PublicationConflict, type PublicationDelivery, type PublicationResolution } from './publication-text.ts';
 import { WorkRecordError, type WorkRecords } from './work-records.ts';
 import { publicationProvider, PublicationRefused, type PublicationProvider, type TicketReceipt } from './publication-providers.ts';
 
 export { PublicationConflict, type PublicationDelivery, type PublicationResolution } from './publication-text.ts';
 
-export type { PublicationDocument } from '@lar-factory/shared';
+export type { PublicationDependencyDocument, PublicationDocument } from '@lar-factory/shared';
 
 export interface PreparePublication {
   documents: PublicationDocument[];
+  /** Requests for the teams that own the work's Dependencies. A Dependency without one stays out of the plan. */
+  dependencies?: PublicationDependencyDocument[];
   /** Required only for conflicting exclusive types; null explicitly chooses no type. */
   typeSelections?: Record<string, string | null>;
   replaces?: string;
-  /** Default body delivery updates the last published location, including a prior comment fallback. */
+  /** Default body delivery updates the last published location, including a prior comment fallback. Keyed by work or
+   * Dependency ID; a Dependency's request is created by default and posted as a comment only on its ticket when chosen. */
   delivery?: Record<string, PublicationDelivery>;
   resolutions?: Record<string, PublicationResolution>;
 }
 export interface PublicationDependencies {
   settings?: (repository: string) => Promise<PublicationSettings>;
+  /** Whether the repository is on this Mac's list; a Dependency's owner that isn't gets plain terms and no consent check. */
+  allowed?: (repository: string) => boolean;
   provider?: PublicationProvider;
   /** Settings and the work database normally share the same application data directory. */
   dir?: string;
@@ -46,9 +51,14 @@ function validateDocument(value: unknown): asserts value is PublicationDocument 
     invalid('Provide a complete team document with outcome, change, all lists and decisions with reasons.');
   }
 }
+const list = (values: string[]) => values.length ? values.map((value) => `- ${value}`).join('\n') : 'None.';
+const teamLanguage = (title: string, text: string) => {
+  if (/\b(?:lar[- ]factory|factory|work[- ]records?|slices?|passing brief|shaping gate|start build)\b|^#+\s*(?:Status|Phase|Review progress|Private map)\b/im.test(`${title}\n${text}`)) {
+    invalid('Rewrite private workflow wording into team language before preview.');
+  }
+};
 function render(document: PublicationDocument, concept: boolean): string {
   if (!concept && !document.checks.some((check) => check.trim())) invalid('Provide at least one observable completion check for each build.');
-  const list = (values: string[]) => values.length ? values.map((value) => `- ${value}`).join('\n') : 'None.';
   const sections = concept ? [['Destination', document.outcome], ['Change', document.change]]
     : [['Outcome', document.outcome], ['Change', document.change], ['Completion checks', list(document.checks)], ['Confirmed assumptions', list(document.assumptions)]];
   sections.push(['Decisions and reasons', list(document.decisions.map((d) => `${d.decision} ${d.reason}`))],
@@ -60,11 +70,23 @@ function render(document: PublicationDocument, concept: boolean): string {
     try { const url = new URL(link); if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) invalid('Related tickets need HTTP URLs without credentials.'); }
     catch { invalid('Related tickets need HTTP URLs.'); }
   }
-  if (/\b(?:lar[- ]factory|factory|work[- ]records?|slices?|passing brief|shaping gate|start build)\b|^#+\s*(?:Status|Phase|Review progress|Private map)\b/im.test(`${document.title}\n${text}`)) {
-    invalid('Rewrite private workflow wording into team language before preview.');
-  }
+  teamLanguage(document.title, text);
   return text;
 }
+/** The owning team's request, linking the user's tickets already published. */
+function renderRequest(request: unknown, links: string[]): string {
+  if (!isRecord(request) || ['dependencyId', 'title', 'change', 'reason', 'contract'].some((key) => typeof request[key] !== 'string' || !String(request[key]).trim())
+    || !Array.isArray(request.checks) || !request.checks.length || request.checks.some((check: unknown) => typeof check !== 'string' || !check.trim())) {
+    return invalid('Provide each Dependency request with a title, change, reason, contract and at least one delivery check.');
+  }
+  const { title, change, reason, contract, checks } = request as unknown as PublicationDependencyDocument;
+  const text = [['Change', change], ['Reason', reason], ['Contract', contract], ['Delivery checks', list(checks)], ...links.length ? [['Requested by', list(links)]] : []]
+    .map(([heading, body]) => `## ${heading}\n\n${body}`).join('\n\n');
+  teamLanguage(title, text);
+  return text;
+}
+/** The settings snapshot of a request to a repository that isn't onboarded: plain terms and no stored consent, so approval of the exact plan is the only consent. */
+const NOT_ONBOARDED = 'not-onboarded';
 
 /** Receipt lookup always uses recorded provider results, including results carried into a replacement plan. */
 function receipt(plan: PublicationPlan, workId: string): TicketReceipt | null {
@@ -97,11 +119,21 @@ function mappedTicket(ticket: PublicationTicket, settings: PublicationSettings, 
   return { ...ticket, destination: { ...ticket.destination, repository: settings.setup.repo, provider }, settingsSnapshot: settings.snapshot,
     vocabulary: mapped.vocabulary, typeResolution: mapped.typeResolution };
 }
+/** A Dependency's request uses the owning repository's build Vocabulary when it is onboarded, and plain terms otherwise. */
+function requestTicket(ticket: PublicationTicket, settings: PublicationSettings | null, creating: boolean): PublicationTicket {
+  if (settings) return mappedTicket(ticket, settings, 'build', false, creating);
+  if (creating && ticket.destination.provider === 'azure') invalid('Azure needs a mapped work item type, so a request to a project that is not onboarded is a handover.');
+  return { ...ticket, settingsSnapshot: NOT_ONBOARDED, vocabulary: {}, typeResolution: { candidates: [], selected: null } };
+}
 
 /** Relationship orientation: ticketWorkId is the child/dependent; relatedWorkId is its parent/blocker.
  * Execution stops at the first failed or uncertain operation. No method retries a write automatically. */
 export function publicationEngine(records: WorkRecords, dependencies: PublicationDependencies = {}) {
   const settings = dependencies.settings ?? ((repo: string) => readPublicationSettings(repo, { dir: dependencies.dir }));
+  const allowed = dependencies.allowed ?? ((repo: string) => readRepositorySetups(dependencies.dir).some((setup) => sameRepo(setup.repo, repo)));
+  /** A Dependency owner's settings, or null when it isn't onboarded. An onboarded owner's failed read throws. */
+  const ownerSettings = (repo: string, read: (repo: string) => Promise<PublicationSettings> = settings) =>
+    /^[^\s/#]+(\/[^\s/#]+)+$/.test(repo) && allowed(repo) ? read(repo) : Promise.resolve(null);
   const provider = dependencies.provider ?? publicationProvider();
   const inspectionSettings = () => {
     const reads = new Map<string, Promise<PublicationSettings>>();
@@ -116,6 +148,12 @@ export function publicationEngine(records: WorkRecords, dependencies: Publicatio
     return {
       tickets: await Promise.all(plan.tickets.map(async (ticket) => {
         if (!ticket.settingsSnapshot) invalid('This plan needs a fresh engine preview with effective settings.');
+        const creations = plan.results.filter((r) => r.operation.kind === 'create' && r.operation.ticketWorkId === ticket.workId);
+        if (ticket.dependencyOf) {
+          const config = await ownerSettings(ticket.destination.repository, readSettings);
+          if (creations.some((r) => r.status === 'successful')) return { ...ticket, settingsSnapshot: config?.snapshot ?? NOT_ONBOARDED };
+          return requestTicket(ticket, config, creations.length > 0);
+        }
         const record = records.read(ticket.workId);
         const config = await readSettings(record.repository);
         checkSettings(config);
@@ -172,6 +210,7 @@ export function publicationEngine(records: WorkRecords, dependencies: Publicatio
       || typeof r.observedText !== 'string' || typeof r.expectedText !== 'string' || !isRecord(r.location)
       || !['body', 'comment'].includes(r.location.kind)))) invalid('Provide text resolutions with observedText, expectedText and a location, indexed by work ID.');
     if (request.typeSelections !== undefined && (!isRecord(request.typeSelections) || Object.values(request.typeSelections).some((value) => value !== null && typeof value !== 'string'))) invalid('Type selections must name a team type or null.');
+    if (request.dependencies !== undefined && !Array.isArray(request.dependencies)) invalid('Provide the Dependency requests as a list.');
     const ready = records.publicationReadiness(workId);
     if (!ready.eligible) invalid(ready.reasons.join(' '));
     const sources = ready.sources.filter((source) => records.read(source.workId).kind !== 'decision');
@@ -217,11 +256,47 @@ export function publicationEngine(records: WorkRecords, dependencies: Publicatio
       else if (delivery !== 'handover') operations.push({ kind: 'create', operationId: `create:${ticket.workId}`, ticketWorkId: ticket.workId,
         dependsOn: sources[0]?.workId !== ticket.workId && records.read(workId).kind === 'concept' && operations.some((op) => op.operationId === `create:${workId}`) ? [`create:${workId}`] : [] });
     }
+    const requested: { dependencyId: string; blocks: string[] }[] = [];
+    for (const document of request.dependencies ?? []) {
+      const dependency = records.dependency(isRecord(document) && typeof document.dependencyId === 'string' ? document.dependencyId : invalid('Name the Dependency each request is for.'));
+      if (requested.some((item) => item.dependencyId === dependency.dependencyId)) invalid('Provide one request for each Dependency.');
+      if (!sources.some((source) => source.workId === dependency.workId)) invalid(`The Dependency ${dependency.dependencyId} isn't held by work in this publication.`);
+      if (dependency.replacedBy) invalid(`The Dependency ${dependency.dependencyId} was replaced by a build, so its team gets no request.`);
+      const handoff = records.dependencyHandoff(dependency.dependencyId);
+      const known = dependency.ticket ?? handoff?.ticket;
+      const delivery = request.delivery?.[dependency.dependencyId] ?? 'body';
+      if (handoff && delivery === 'comment') invalid('The team\'s ticket already has the request. Send revised handover text instead.');
+      if (!known && delivery === 'comment') invalid('Comment delivery needs an existing ticket.');
+      const repository = known ? known.slice(0, known.lastIndexOf('#')) : dependency.owner;
+      const provider = onAzure(repository) ? 'azure' : 'github';
+      // An owner named as a team rather than a repository, a request already handed off, and a team's own ticket the user
+      // didn't choose to comment on all get handover text only.
+      const writing = /^[^\s/#]+(\/[^\s/#]+)+$/.test(repository) && !handoff && delivery !== 'handover' && (known ? delivery === 'comment' : delivery === 'body');
+      const config = await ownerSettings(repository, readSettings);
+      const destination: PublicationTicket['destination'] = { repository, provider };
+      if (known) {
+        const [organization, project] = repository.split('/');
+        const number = known.split('#').at(-1)!;
+        destination.ticket = known;
+        destination.url = handoff?.url ?? (provider === 'github' ? `https://github.com/${repository}/issues/${number}`
+          : `https://dev.azure.com/${organization}/${encodeURIComponent(decodePart(project!))}/_workitems/edit/${number}`);
+      }
+      const selected = config ? resolveVocabulary(config.setup.vocabulary, 'build', undefined, request.typeSelections?.[dependency.dependencyId]) : null;
+      if (selected && !selected.ready) return invalid(`Choose one team type or none for the request to ${repository}: ${selected.candidates.join(', ')}.`);
+      const links = tickets.filter((ticket) => dependency.blocks.includes(ticket.workId) && ticket.destination.url).map((ticket) => ticket.destination.url!);
+      const ticket = requestTicket({ workId: dependency.dependencyId, dependencyOf: dependency.workId, destination, vocabulary: selected?.vocabulary ?? {},
+        typeResolution: selected?.typeResolution ?? { candidates: [], selected: null }, title: String(document.title), body: renderRequest(document, links) }, config, writing && !known);
+      tickets.push(ticket);
+      if (writing) operations.push(known ? { kind: 'comment', operationId: `request:${dependency.dependencyId}:${sequence}`, ticketWorkId: ticket.workId, dependsOn: [], content: ticket.body }
+        : { kind: 'create', operationId: `create:${ticket.workId}`, ticketWorkId: ticket.workId, dependsOn: [] });
+      if (known || writing) requested.push({ dependencyId: dependency.dependencyId, blocks: dependency.blocks });
+    }
     const completedRelationships = records.publications(workId).flatMap((p) => p.results).filter((r) => r.status === 'successful');
-    for (const ticket of tickets) {
+    for (const ticket of tickets.filter((ticket) => !ticket.dependencyOf)) {
       const record = records.read(ticket.workId);
       const relations = [ ...(record.parentId && tickets.some((t) => t.workId === record.parentId) ? [{ workId: record.parentId, relationship: 'child' as const }] : []),
-        ...records.blockers(ticket.workId).filter((b) => tickets.some((t) => t.workId === b.workId)).map((b) => ({ workId: b.workId, relationship: 'blocked-by' as const })) ];
+        ...records.blockers(ticket.workId).filter((b) => tickets.some((t) => t.workId === b.workId)).map((b) => ({ workId: b.workId, relationship: 'blocked-by' as const })),
+        ...requested.filter((item) => item.blocks.includes(ticket.workId)).map((item) => ({ workId: item.dependencyId, relationship: 'blocked-by' as const })) ];
       for (const related of relations.filter((related) => request.delivery?.[ticket.workId] !== 'handover' && request.delivery?.[related.workId] !== 'handover'
         && !completedRelationships.some(({ operation: op }) => (op.kind === 'relationship' || op.kind === 'textual-relationship')
           && op.ticketWorkId === ticket.workId && op.relatedWorkId === related.workId && op.relationship === related.relationship))) operations.push({ kind: 'relationship', operationId: `${related.relationship}:${ticket.workId}:${related.workId}`,
@@ -238,15 +313,16 @@ export function publicationEngine(records: WorkRecords, dependencies: Publicatio
       const ticket = plan.tickets.find((t) => t.workId === operation.ticketWorkId)!;
       try {
         const writeTicket = publicationWriteTicket(operation, plan.tickets);
-        const config = await settings(writeTicket.destination.repository);
-        checkSettings(config);
-        if (config.snapshot !== writeTicket.settingsSnapshot) return await inspect(workId, planId);
+        const config = await (writeTicket.dependencyOf ? ownerSettings : settings)(writeTicket.destination.repository);
+        if (config && !writeTicket.dependencyOf) checkSettings(config);
+        if ((config?.snapshot ?? NOT_ONBOARDED) !== writeTicket.settingsSnapshot) return await inspect(workId, planId);
         // Check again after all awaited reads, immediately before the atomic dispatch claim.
-        const currentTicket = operation.kind === 'create' ? mappedTicket(ticket, config, records.read(ticket.workId).kind, records.read(ticket.workId).kind === 'concept') : ticket;
+        const currentTicket = operation.kind !== 'create' ? ticket : ticket.dependencyOf ? requestTicket(ticket, config, true)
+          : mappedTicket(ticket, config!, records.read(ticket.workId).kind, records.read(ticket.workId).kind === 'concept');
         if (JSON.stringify(currentTicket) !== JSON.stringify(ticket)) return await inspect(workId, planId);
         const needed = publicationConsents(operation, ticket);
         if (operation.kind === 'pr-closing-reference') invalid('PR closing references need the delivery extension.');
-        consent(config, needed);
+        if (config) consent(config, needed);
       } catch (error) { return { ...check, current: false, next: null, reasons: [...check.reasons, reason(error)] }; }
       let claim;
       try { claim = records.claimPublication(workId, planId, plan.revision, plan.digest, { tickets: plan.tickets, operations: plan.operations }, identity); }

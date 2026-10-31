@@ -5,7 +5,7 @@
 import { beforeEach, expect, test, vi } from 'vite-plus/test';
 import { $, $$, answer, holdPosts, mountPage, posted, pressMenu, recorded, sample, settle, text } from '../../test/support.ts';
 import { normalizeItems } from '@lar-factory/shared';
-import type { BoardData, Item, ItemThread } from '@lar-factory/shared';
+import type { BoardData, DependencyHold, Item, ItemThread } from '@lar-factory/shared';
 import { rawIssue, sliceRef } from '@lar-factory/shared/test/raw-items';
 
 const C200 = 'I_sample09';
@@ -342,6 +342,15 @@ test('a part with no thread yet says when its thread starts', async () => {
   expect(text(step('I_sample13').querySelector('[data-part-meta]')!.lastElementChild)).toBe('Thread starts when #202 is done');
 });
 
+test('a part held by a Dependency says its thread starts once you mark the Dependency met', async () => {
+  const dependency: DependencyHold = { dependencyId: 'dep-1', revision: 1, owner: 'server team', need: 'An export endpoint', ticket: null, named: [], evidence: '',
+    met: null, needsReview: false, observation: null };
+  await mountPage(withItem('I_sample13', { threads: [], blockers: [{ number: 202, repo: 'maddec01/lar-server', state: 'open' },
+    { number: 0, repo: 'server team', state: 'open', title: dependency.need, dependency }] }));
+  expect(text(step('I_sample13').querySelector('[data-part-meta]')!.lastElementChild))
+    .toBe('Thread starts when #202 is done and you mark the Dependency on server team met');
+});
+
 test('a Ready part with completed prerequisites offers Start without blocking wording', async () => {
   await mountPage(unblocked());
   const part = step('I_sample13');
@@ -499,6 +508,17 @@ test('the parts list keeps a build before a research decision blocked by that bu
   const research = { ...decision([{ repo: build.repo!, number: build.number!, state: 'open' }]), labels: ['decision-research'] };
   await mountPage({ ...sample, items: [c200, research, build] });
   expect([...dossier().querySelectorAll('[data-parts-list] [data-part]')].map((p) => p.getAttribute('data-part'))).toEqual([build.id, research.id]);
+});
+
+test("a concept map's Dependencies show as a Dependencies row, after what waits and before the fog", async () => {
+  const dependencies = ['A resume endpoint, from team/relay, blocks #140'];
+  await mountPage(withItem(C200, { map: { ...c200.map!, dependencies } }));
+  const rows = [...dossier().querySelectorAll<HTMLElement>('[data-attention-row]')].map((r) => r.dataset.attentionRow);
+  expect(rows).toEqual(['you', 'decisions', 'waiting', 'dependencies', 'fog']);
+  const row = dossier().querySelector('[data-attention-row="dependencies"]')!;
+  expect([text(row.firstElementChild), [...row.querySelector('dd')!.children].map(text)]).toEqual(['Dependencies 1', dependencies]);
+  await press(button(row, '#140'));
+  expect(dialogTitle(), "a Dependency's #n opens its item").toBe(`#140 ${sample.items.find((i) => i.number === 140)!.title}`);
 });
 
 test('a concept with no map has no fog row', async () => {

@@ -6,10 +6,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { StatementSync } from 'node:sqlite';
 import { STATUSES, type Status } from '@lar-factory/shared';
 import { openDatabase, WorkRecordError, workRecordsPath, type Database } from './database.ts';
+import { dependencyRecords, forgetDependencies, type DependencyRecords } from './dependencies.ts';
 import { publicationRecords, type PublicationRecords } from './publication-records.ts';
 import type { Retention } from './retention.ts';
 
 export { WorkRecordError, workRecordsPath, type WorkRecordErrorCode } from './database.ts';
+export { DEPENDENCY_OBSERVATION_KINDS, type Dependency, type DependencyChange, type DependencyObservationKind, type NewDependency } from './dependencies.ts';
 export { DEFAULT_RETENTION, readRetention, retentionPath, writeRetention, type Retention } from './retention.ts';
 
 /** The board's kinds, plus a build's slice. */
@@ -216,7 +218,7 @@ export interface WorkRecordFilter {
   kind?: WorkKind;
 }
 
-export interface WorkRecords extends PublicationRecords {
+export interface WorkRecords extends PublicationRecords, DependencyRecords {
   create(record: NewWorkRecord): WorkRecord;
   /** Throws `not-found` when no record has `workId`. */
   read(workId: string): WorkRecord;
@@ -283,7 +285,7 @@ export interface WorkRecords extends PublicationRecords {
   hidden(retention: Retention, now?: Date): WorkRecord[];
   /** Deletes the finished and set-aside records `retention` deletes at `now`, with their bodies, review rounds, threads,
    * launch intents, replaced PRs, observations and blocker edges, in one transaction. A due record stays while it owns a kept record or a kept
-   * record waits on it; the kept parent and blockers of a deleted record are bumped. */
+   * record waits on it, and while it holds a Dependency or one blocks it; the kept parent and blockers of a deleted record are bumped. */
   deleteExpired(retention: Retention, now?: Date): Expired;
   /** The records it owns, in the order they were made. */
   children(workId: string): WorkRecord[];
@@ -292,10 +294,12 @@ export interface WorkRecords extends PublicationRecords {
   /** Whether the work is complete, from local facts only. A build or other built record completes once its recorded PR
    * is observed merged, a slice once it is finished, a decision once its answer and domain drafts are recorded and its
    * concept's map was written after them, and a concept once its Fog is gone and every decision and build it owns,
-   * except set-aside ones, is complete. A Status, a ticket closing or a thread ending never completes work. */
+   * except set-aside ones, is complete. A build stays incomplete while an unmet Dependency holds it. A Status, a ticket
+   * closing or a thread ending never completes work. */
   completion(workId: string): Completion;
-  /** Its blockers that aren't complete yet, each with the reasons; the work can start once this is empty. */
-  waitingOn(workId: string): { workId: string; reasons: string[] }[];
+  /** Its blockers that aren't complete yet, then the unmet Dependencies holding it, each with the reasons; the work can
+   * start once this is empty. */
+  waitingOn(workId: string): ({ workId: string; reasons: string[] } | { dependencyId: string; reasons: string[] })[];
   /** Records whether a concept's Fog is gone. */
   setFogGone(workId: string, revision: number, gone: boolean): WorkRecord;
   /** The records that wait on it. */
@@ -526,6 +530,10 @@ function workRecords(database: Database): WorkRecords {
   const replacePullRequest = db.prepare('INSERT INTO replaced_pull_requests (work_id, pull_request, replaced_at) VALUES (?, ?, ?)');
   const replacedRows = db.prepare('SELECT * FROM replaced_pull_requests WHERE work_id = ? ORDER BY rowid');
   const nextQueueOrder = db.prepare('SELECT coalesce(max(queue_order), 0) + 1 AS next FROM work_records WHERE repository = ?');
+  const dependencies = dependencyRecords(database, (workId) => bump.run(new Date().toISOString(), workId));
+  const { treeConflict, kindConflict, retentionReason, recordDependencyTicket, ...dependencyChanges } = dependencies;
+  const unmetIds = db.prepare('SELECT b.dependency_id, d.owner FROM dependency_blocks b JOIN dependencies d ON d.dependency_id = b.dependency_id WHERE b.build_id = ? AND d.met_at IS NULL ORDER BY b.rowid');
+  const unmet = (workId: string) => unmetIds.all(workId).map((row) => ({ dependencyId: String(row.dependency_id), owner: String(row.owner) }));
 
   const find = (workId: string): Row => {
     const row = select.get(workId) as Row | undefined;
@@ -624,8 +632,9 @@ function workRecords(database: Database): WorkRecords {
       }
       return reasons;
     }
-    if (!row.pull_request) return ['It has no recorded PR.'];
-    return prState.get(row.work_id)?.state === 'merged' ? [] : [`Its PR ${row.pull_request} isn't observed merged.`];
+    const reasons = !row.pull_request ? ['It has no recorded PR.']
+      : prState.get(row.work_id)?.state === 'merged' ? [] : [`Its PR ${row.pull_request} isn't observed merged.`];
+    return [...reasons, ...unmet(row.work_id).map(({ dependencyId, owner }) => `Its Dependency ${dependencyId} on ${owner} isn't met.`)];
   };
 
   const related = (query: StatementSync, workId: string): WorkRecord[] => database.read(() => {
@@ -634,7 +643,8 @@ function workRecords(database: Database): WorkRecords {
   });
 
   return {
-    ...publicationRecords(database, (workId) => fromRow(find(workId))),
+    ...publicationRecords(database, (workId) => fromRow(find(workId)), recordDependencyTicket),
+    ...dependencyChanges,
     create: (record) => database.write(() => insert(record)),
     read: (workId) => database.read(() => fromRow(find(workId))),
     initialContext: (workId) => database.read(() => find(workId).initial_context),
@@ -655,6 +665,8 @@ function workRecords(database: Database): WorkRecords {
           if (row.build_phase || row.pull_request || row.skills || hasRounds.get(workId)) checkBuilt(nextKind);
           for (const { body } of bodyNames.all(workId)) checkHolds(nextKind, body as Body);
           if (row.fog_gone_at && nextKind !== 'concept') throw invalid(`The concept ${workId} has its Fog recorded gone, so it stays a concept.`);
+          const held = kindConflict(workId);
+          if (held) throw invalid(held);
         }
         const moved = nextStatus ?? row.status;
         return {
@@ -708,11 +720,15 @@ function workRecords(database: Database): WorkRecords {
       const parent = find(parentId);
       if (row.parent_id) throw invalid(`The work record ${workId} already has the parent ${row.parent_id}; clear it first.`);
       checkOwns(parent, row);
+      const conflict = treeConflict(workId, parentId);
+      if (conflict) throw invalid(conflict);
       touched.push(parentId);
       return { parent_id: parentId };
     }),
     clearParent: (workId, revision) => change(workId, revision, (row, touched) => {
       if (!row.parent_id) throw invalid(`The work record ${workId} has no parent.`);
+      const conflict = treeConflict(workId, null);
+      if (conflict) throw invalid(conflict);
       touched.push(row.parent_id);
       return { parent_id: null };
     }),
@@ -942,9 +958,10 @@ function workRecords(database: Database): WorkRecords {
               return members.includes(workId) && (members.some((id) => !due.has(id)) ||
                 (plan.superseded_by === null && unresolved(String(plan.plan_id), String(plan.content))));
             });
-            if (!child && !waiting && !journal) continue;
+            const dependency = retentionReason(workId, (id) => due.has(id));
+            if (!child && !waiting && !journal && !dependency) continue;
             due.delete(workId);
-            kept.push({ workId, reason: journal ? `Its publication journal still needs recovery evidence or a kept source.` : child ? `It owns the ${child.kind} ${child.work_id}, which is kept.` : `The ${waiting!.kind} ${waiting!.work_id}, which is kept, waits on it.` });
+            kept.push({ workId, reason: dependency ?? (journal ? `Its publication journal still needs recovery evidence or a kept source.` : child ? `It owns the ${child.kind} ${child.work_id}, which is kept.` : `The ${waiting!.kind} ${waiting!.work_id}, which is kept, waits on it.`) });
             changed = true;
           }
         }
@@ -965,6 +982,7 @@ function workRecords(database: Database): WorkRecords {
         for (const workId of deleted) db.prepare('DELETE FROM publication_attachments WHERE work_id = ?').run(workId);
         for (const workId of deleted) db.prepare('DELETE FROM publication_plans WHERE work_id = ?').run(workId);
         for (const workId of deleted) {
+          for (const holder of forgetDependencies(database, workId)) if (!due.has(holder)) touched.add(holder);
           for (const statement of deleteOwned) statement.run(workId);
           deleteBlockers.run(workId, workId);
           deleteRecord.run(workId);
@@ -980,9 +998,10 @@ function workRecords(database: Database): WorkRecords {
     }),
     waitingOn: (workId) => database.read(() => {
       find(workId);
-      return (blockerRows.all(workId) as unknown as Row[])
+      const records = (blockerRows.all(workId) as unknown as Row[])
         .map((blocker) => ({ workId: blocker.work_id, reasons: incomplete(blocker) }))
         .filter((blocker) => blocker.reasons.length);
+      return [...records, ...unmet(workId).map(({ dependencyId }) => ({ dependencyId, reasons: ["It isn't marked met."] }))];
     }),
     setFogGone: (workId, revision, gone) => {
       if (typeof gone !== 'boolean') throw invalid(`Whether the Fog is gone "${String(gone)}" isn't true or false.`);

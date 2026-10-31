@@ -20,8 +20,9 @@ initial publication and later updates:
    destination and decision gists. Include outcome, change, completion checks,
    confirmed assumptions, decisions with reasons, implementation notes, domain
    notes and ordinary related ticket URLs. Keep private maps, work IDs, Status
-   and shaping or build progress in records. Connections and external
-   Dependencies wait for a later release.
+   and shaping or build progress in records. For each Dependency the
+   published work holds, write a request too; see
+   [Dependency requests](#dependency-requests).
 2. Save JSON with `documents` and run
    `lar-work prepare-publication <work ID> --file <request.json>`.
    Each document has `workId`, `title`, `outcome`, `change`, `checks`,
@@ -106,6 +107,32 @@ may choose `{"delivery":"comment"}` or `{"delivery":"handover"}`. Show the
 new plan and ask for its separate approval before writing. A body or native
 relationship approval does not approve a fallback comment. Read-only handover
 remains available when writes are refused.
+
+## Dependency requests
+
+A Dependency's request asks the owning team for the change. List it under
+`dependencies` in the prepare request with `dependencyId`, `title`, `change`,
+`reason`, `contract` and `checks`, in team language. `lar-work dependencies <work ID>`
+prints the work's Dependencies. The engine adds a link to each of the user's
+published tickets the Dependency blocks, and uses the owning repository's
+Vocabulary when it is onboarded and plain terms otherwise.
+
+- With no ticket yet, the plan creates the request in the owner's repository.
+  An owner named as a team rather than a repository gets a handover.
+- With a ticket the team already has, the plan posts the request as a comment
+  only when `delivery[dependencyId]` is `"comment"`; otherwise it is a handover.
+- A repository that is not onboarded has no saved consent, so tell the user
+  that approving the exact plan is the only permission for that write.
+- After the request reaches the team's ticket, the engine records the ticket on
+  the Dependency and never writes to that ticket again. A correction is a new
+  plan whose request shows in `publication-handover` for the user to send.
+- Each build the Dependency blocks gets a native blocked-by link to the team's
+  ticket. After a refusal, `fallback-publication` previews a `Depends on <URL>`
+  comment on the user's ticket; after that is refused, a handover. A refusal
+  never changes the private blocker or the Dependency's handover.
+
+If the login cannot write to the owner's repository, choose the handover
+fallback and give the user its text to send.
 
 ## Delivery PRs
 

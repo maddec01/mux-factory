@@ -484,7 +484,7 @@ it('keeps projection query cost constant as briefs and publication history grow'
     const measured = publicationRecords({ ...database, db: new Proxy(database.db, { get(target, key) {
       if (key === 'prepare') return (sql: string) => { queries.push(sql); return target.prepare(sql); };
       return Reflect.get(target, key);
-    } }) }, (id) => records.read(id));
+    } }) }, (id) => records.read(id), () => {});
     const build = await passingBuild(records);
     measured.publicationSummaries();
     const smallQueries = queries.splice(0).length;
@@ -512,7 +512,8 @@ it('backfills lightweight eligibility from existing briefs and exact gate eviden
   const { openDatabase } = await import('./database.ts');
   const { MIGRATIONS } = await import('./migrations.ts');
   const path = join(tempDir(), 'records.db');
-  const old = await openDatabase(path, { migrations: MIGRATIONS.slice(0, -1) });
+  // The schema before the backfill, the seventh step.
+  const old = await openDatabase(path, { migrations: MIGRATIONS.slice(0, 6) });
   const briefDigest = createHash('sha256').update(JSON.stringify('Known brief.')).digest('hex');
   for (const [id, brief] of [['passed', 'Known brief.'], ['changed', 'Changed brief.']]) {
     old.db.prepare('INSERT INTO work_records (work_id, repository, kind, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)').run(id!, 'team/app', 'build', 'List', '', '');

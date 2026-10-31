@@ -101,8 +101,16 @@ The T3 project whose folder is a repository's main checkout, recognised by its g
 _Avoid_: lar project, factory project (for where threads run)
 
 **Repository role**:
-A one-line description of what a repository is to the others, such as the API server a client app uses.
+A one-line description of what a repository is, such as the API server a client app uses. Onboarding proposes it and the user confirms it.
 _Avoid_: relationship, repo type
+
+**Connection**:
+The user's local record that two onboarded repositories are related, so refinement can propose a build in one for work captured in the other. It has no direction; each repository's role says what it is.
+_Avoid_: relationship, related repo
+
+**Dependency**:
+A change the user's work needs in a repository they do not work on, delivered by the team that owns it. It lives in the work record, blocks the builds that need it, and is met when the user marks it met.
+_Avoid_: external build, cross-repository build
 
 **Repository config**:
 Optional team-shared defaults for one repository's factory setup. Each user can override defaults locally and chooses their own write consent.
@@ -363,7 +371,7 @@ The board action that starts a Ready build's thread in its own worktree.
 _Avoid_: launch
 
 **Start after**:
-Arming a blocked part's start, so the board starts it once the local facts in its work records complete every work it waits on. A ticket closing, a Status or a finished T3 turn completes none.
+Arming a blocked part's start, so the board starts it once the local facts in its work records complete every work it waits on and the user has marked each Dependency it needs met. A ticket closing, a Status or a finished T3 turn completes none.
 _Avoid_: auto-start (for this)
 
 **Design system**:

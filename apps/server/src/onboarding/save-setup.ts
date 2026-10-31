@@ -4,7 +4,7 @@
 
 import { REPOSITORY_OPERATIONS, isRecord, onAzure, type LocalSetupAnswers, type OnboardingRepository, type RepositoryOperation } from '@lar-factory/shared';
 import { boardDataDir } from '@lar-factory/shared/data-dir';
-import { isRepo, saveOnboarded, stillOnboarding } from '../config/repository-config.ts';
+import { isRepo, saveConnections, saveOnboarded, stillOnboarding } from '../config/repository-config.ts';
 import { readSharedDefaults, saveLocalSetup, sharedDefaultsOf } from '../config/repository-settings.ts';
 import { message } from '../github/github.ts';
 import { detectAccess } from './detect-setup.ts';
@@ -32,14 +32,16 @@ const ANSWERS = 'Send the repository, its T3 project, role, item source, domain-
 
 /**
  * Saves the body's answers as its `repo`'s local settings and finishes its onboarding, in place of the one saved under
- * `replaces` when it names one; returns the repositories still onboarding, or the status and problem. An access read
+ * `replaces` when it names one. Its `connections`, when it sends them, become the repository's Connections. Returns the repositories still onboarding, or the status and problem. An access read
  * that fails leaves every operation unverified.
  */
 export async function saveSetup(input: Record<string, unknown>, dir = boardDataDir(), reads: SaveReads = saveReads):
   Promise<{ onboarding: OnboardingRepository[] } | { status: number; error: string }> {
-  const { repo, replaces } = input;
+  const { repo, replaces, connections } = input;
   const answers = answersOf(input);
-  if (!isRepo(repo) || !answers || replaces !== undefined && typeof replaces !== 'string') return { status: 400, error: ANSWERS };
+  if (!isRepo(repo) || !answers || replaces !== undefined && typeof replaces !== 'string' || connections !== undefined && !strings(connections)) {
+    return { status: 400, error: ANSWERS };
+  }
   const { role, itemSource, domainDocs, skills } = answers;
   const fits = sharedDefaultsOf({ role, itemSource, domainDocs, skills }, onAzure(repo));
   if ('problem' in fits) return { status: 400, error: `${repo}: ${fits.problem.replace(/^\.lar-factory\.json /, '')}` };
@@ -50,6 +52,7 @@ export async function saveSetup(input: Record<string, unknown>, dir = boardDataD
   try {
     const list = saveOnboarded(repo, replaces ?? null, dir);
     saveLocalSetup(repo, answers, access, shared, dir);
+    if (connections) saveConnections(repo, connections, dir);
     return { onboarding: stillOnboarding(list) };
   } catch (err) {
     return { status: 409, error: message(err) };

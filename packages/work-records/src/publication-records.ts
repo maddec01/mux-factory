@@ -29,6 +29,8 @@ export interface PublicationRecords {
   publicationHandover(workId: string, planId: string): string;
   publicationAttachment(workId: string): PublicationAttachment | null;
   attachPublicationUrl(workId: string, revision: number, planId: string, ticket: string, url: string): WorkRecord;
+  /** The successful write that handed a Dependency's request to its owning team, or null before it. */
+  dependencyHandoff(dependencyId: string): { operationId: string; ticket: string; url: string } | null;
 }
 
 const invalid = (message: string): never => { throw new WorkRecordError('invalid', message); };
@@ -82,7 +84,8 @@ function location(value: unknown): PublicationLocation {
 }
 
 /** Owns the journal alongside the existing writer, using the same SQLite transactions. */
-export function publicationRecords(database: Database, readRecord: (workId: string) => WorkRecord): PublicationRecords {
+export function publicationRecords(database: Database, readRecord: (workId: string) => WorkRecord,
+  recordDependencyTicket: (dependencyId: string, ticket: string) => void): PublicationRecords {
   const { db } = database;
   const find = (workId: string) => readRecord(workId);
   const expected = (workId: string, revision: number) => {
@@ -182,6 +185,20 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
         ORDER BY o.rowid DESC LIMIT 1`).get(workId, workId);
     return row ? { ticket: String(row.ticket), url: String(row.url) } : null;
   };
+  const dependencyRow = (dependencyId: string) => db.prepare('SELECT work_id, owner, ticket FROM dependencies WHERE dependency_id = ?').get(dependencyId) as
+    { work_id: string; owner: string; ticket: string | null } | undefined;
+  const handoff = (dependencyId: string): { operationId: string; ticket: string; url: string } | null => {
+    const holder = dependencyRow(dependencyId)?.work_id;
+    const row = holder === undefined ? undefined : db.prepare(`SELECT o.operation_id, json_extract(o.attempt, '$.ticket') AS ticket, json_extract(o.attempt, '$.url') AS url
+      FROM publication_sources s JOIN publication_plans p ON p.plan_id = s.plan_id CROSS JOIN json_each(p.content, '$.operations') op
+      JOIN publication_outcomes o ON o.plan_id = p.plan_id AND o.operation_id = json_extract(op.value, '$.operationId')
+      WHERE s.work_id = ? AND json_extract(op.value, '$.ticketWorkId') = ? AND json_extract(op.value, '$.kind') IN ('create', 'comment')
+      AND json_extract(o.attempt, '$.status') = 'successful' ORDER BY o.rowid LIMIT 1`).get(holder, dependencyId);
+    return row ? { operationId: String(row.operation_id), ticket: String(row.ticket), url: String(row.url) } : null;
+  };
+  /** The repository a Dependency's request goes to: its ticket's repository once it has one, else its owner. */
+  const requestRepository = (dependency: { owner: string; ticket: string | null }, given: string | null | undefined) =>
+    given ? given.slice(0, given.lastIndexOf('#')) : dependency.owner;
   const pending = (workId: string, planId: string, current?: PublicationContent): PublicationPending => {
     const plan = load(workId, planId);
     const ready = readiness(workId);
@@ -195,9 +212,9 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
       reasons.push('The destination, mapping, content or required operations changed; prepare and approve a new plan.');
     }
     for (const ticket of plan.tickets) {
-      const attached = find(ticket.workId).ticket;
+      const attached = ticket.dependencyOf ? dependencyRow(ticket.workId)?.ticket ?? null : find(ticket.workId).ticket;
       const planned = receipt(plan, ticket.workId);
-      const known = knownTicket(ticket.workId);
+      const known = ticket.dependencyOf ? handoff(ticket.workId) : knownTicket(ticket.workId);
       const uncompletedCreation = plan.results.some((item) => item.operation.kind === 'create' && item.operation.ticketWorkId === ticket.workId && item.status !== 'successful');
       if ((attached && attached !== (planned ?? known)?.ticket) || ((attached || known) && uncompletedCreation)) {
         reasons.push('The attached or known ticket changed the publication destination; prepare and approve a new plan.');
@@ -223,7 +240,8 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
   const validateContent = (content: PublicationContent, ready: PublicationReadiness, replaces?: string) => {
     keys(content, ['tickets', 'operations']);
     const ticketIds: string[] = [];
-    const privateIds = db.prepare('SELECT work_id FROM work_records').all().map((row) => String(row.work_id));
+    const dependencyIds: string[] = [];
+    const privateIds = db.prepare('SELECT work_id AS id FROM work_records UNION ALL SELECT dependency_id FROM dependencies').all().map((row) => String(row.id));
     const publicText = (value: unknown, name: string) => {
       const text = filled(value, name);
       if (privateIds.some((id) => text.includes(id)) || /<!--\s*(?:lar|factory)|\b(?:work-id|workId)\s*[:=]/i.test(text)) invalid('Published content must omit private work IDs and factory markers.');
@@ -231,28 +249,40 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
     };
     for (const item of list(content.tickets)) {
       const ticket = object(item);
-      keys(ticket, ['workId', 'settingsSnapshot', 'destination', 'vocabulary', 'typeResolution', 'title', 'body']);
+      keys(ticket, ['workId', 'dependencyOf', 'settingsSnapshot', 'destination', 'vocabulary', 'typeResolution', 'title', 'body']);
+      if (ticket.dependencyOf !== undefined) filled(ticket.dependencyOf, 'Dependency holder');
       if (ticket.settingsSnapshot !== undefined) filled(ticket.settingsSnapshot, 'settings snapshot');
       const workId = filled(ticket.workId, 'ticket work ID');
-      const record = find(workId);
-      if (!ready.sources.some((item) => item.workId === workId) || ['decision', 'slice'].includes(record.kind)) invalid('Only this publication\'s concept and builds can have tickets.');
       ticketIds.push(workId);
       const destination = object(ticket.destination);
       keys(destination, ['provider', 'repository', 'project', 'ticket', 'url']);
       oneOf(destination.provider, ['github', 'azure']);
-      if (destination.repository !== record.repository) invalid('A ticket must go to its work\'s own repository.');
       if (destination.project !== undefined) filled(destination.project, 'destination project');
       if ((destination.ticket === undefined) !== (destination.url === undefined)) invalid('An existing destination needs both its ticket reference and URL.');
-      if (destination.ticket !== undefined) {
-        reference(destination.ticket); url(destination.url);
-        if (record.ticket && record.ticket !== destination.ticket) invalid('The destination differs from the attached ticket.');
-      } else if (record.ticket && knownTicket(workId)?.ticket !== record.ticket) invalid('A picked ticket needs an existing destination.');
-      const known = knownTicket(workId);
-      if (known && destination.ticket !== undefined && (destination.ticket !== known.ticket || destination.url !== known.url)) invalid('The destination differs from the known publication ticket.');
-      if (known && destination.ticket === undefined) {
-        const previous = replaces === undefined ? null : load(ready.sources[0]!.workId, replaces);
-        const creation = previous?.results.find((result) => result.status === 'successful' && result.operation.kind === 'create' && result.operation.ticketWorkId === workId);
-        if (!creation || !content.operations.some((op) => op.operationId === creation.operation.operationId && digest(op) === digest(creation.operation))) invalid('Use the known completed ticket instead of creating another one.');
+      if (ticket.dependencyOf !== undefined) {
+        dependencyIds.push(workId);
+        const dependency = dependencyRow(workId) ?? invalid('A Dependency request names no Dependency.');
+        if (dependency.work_id !== ticket.dependencyOf || !ready.sources.some((item) => item.workId === dependency.work_id)) invalid('A Dependency request must come from work in this publication.');
+        const done = handoff(workId);
+        const given = dependency.ticket ?? done?.ticket;
+        if (destination.repository !== requestRepository(dependency, given)) invalid('A Dependency request must go to its owning team\'s repository.');
+        if (destination.ticket !== undefined && (reference(destination.ticket) !== given || !url(destination.url))) invalid('The destination differs from the Dependency\'s ticket.');
+        if (given && destination.ticket === undefined && !content.operations.some((op) => op.operationId === done?.operationId && op.kind === 'create')) invalid('Use the Dependency\'s ticket instead of creating another one.');
+      } else {
+        const record = find(workId);
+        if (!ready.sources.some((item) => item.workId === workId) || ['decision', 'slice'].includes(record.kind)) invalid('Only this publication\'s concept and builds can have tickets.');
+        if (destination.repository !== record.repository) invalid('A ticket must go to its work\'s own repository.');
+        if (destination.ticket !== undefined) {
+          reference(destination.ticket); url(destination.url);
+          if (record.ticket && record.ticket !== destination.ticket) invalid('The destination differs from the attached ticket.');
+        } else if (record.ticket && knownTicket(workId)?.ticket !== record.ticket) invalid('A picked ticket needs an existing destination.');
+        const known = knownTicket(workId);
+        if (known && destination.ticket !== undefined && (destination.ticket !== known.ticket || destination.url !== known.url)) invalid('The destination differs from the known publication ticket.');
+        if (known && destination.ticket === undefined) {
+          const previous = replaces === undefined ? null : load(ready.sources[0]!.workId, replaces);
+          const creation = previous?.results.find((result) => result.status === 'successful' && result.operation.kind === 'create' && result.operation.ticketWorkId === workId);
+          if (!creation || !content.operations.some((op) => op.operationId === creation.operation.operationId && digest(op) === digest(creation.operation))) invalid('Use the known completed ticket instead of creating another one.');
+        }
       }
       const types: string[] = [];
       for (const [name, term] of Object.entries(object(ticket.vocabulary))) {
@@ -275,7 +305,7 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
     }
     unique(ticketIds, 'publication ticket');
     const requiredTickets = ready.sources.filter((item) => find(item.workId).kind !== 'decision').map((item) => item.workId);
-    if (digest([...ticketIds].sort()) !== digest(requiredTickets.sort())) invalid('The plan must include every active build and its concept.');
+    if (digest(ticketIds.filter((id) => !dependencyIds.includes(id)).sort()) !== digest(requiredTickets.sort())) invalid('The plan must include every active build and its concept.');
     const seen = new Set<string>();
     const created = new Set<string>();
     let relationships = false;
@@ -294,10 +324,16 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
       const ticket = content.tickets.find((ticket) => ticket.workId === op.ticketWorkId);
       if (!ticket) invalid('The operation names no proposed ticket.');
       const target = ticket!;
+      if (target.dependencyOf !== undefined) {
+        // The owning team's ticket gets the request once; afterwards only handover text changes.
+        if (kind !== 'create' && kind !== 'comment') invalid('A Dependency request is only created or posted; its team\'s ticket is never edited.');
+        const done = handoff(target.workId);
+        if (done && done.operationId !== id) invalid('The team\'s ticket already has the request. Prepare revised handover text instead of changing it.');
+      }
       if (kind === 'create') {
         if (relationships) invalid('Create tickets before relationships.');
         if (target.destination.ticket || created.has(target.workId)) invalid('A ticket can be created only once.');
-        const parent = find(target.workId).parentId;
+        const parent = target.dependencyOf ? null : find(target.workId).parentId;
         if (parent && ticketIds.includes(parent) && !created.has(parent) && !content.tickets.find((item) => item.workId === parent)?.destination.ticket) invalid('Create the parent ticket before its builds.');
         created.add(target.workId);
       } else {
@@ -328,6 +364,8 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
         if (!ticketIds.includes(related) || related === target.workId) invalid('A relationship must name another ticket in this publication.');
         if (!content.tickets.find((item) => item.workId === related)?.destination.ticket && !created.has(related)) invalid('Create both tickets before their relationship.');
         oneOf(op.relationship, ['child', 'blocked-by']);
+        if (dependencyIds.includes(related) && (op.relationship !== 'blocked-by'
+          || !db.prepare('SELECT 1 FROM dependency_blocks WHERE dependency_id = ? AND build_id = ?').get(related, target.workId))) invalid('Only a build a Dependency blocks can link to its ticket, as blocked by it.');
       }
       if (kind === 'pr-closing-reference' && reference(op.pullRequest) !== find(target.workId).pullRequest) invalid("A closing reference must name this work's recorded delivery PR.");
     }
@@ -361,7 +399,7 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
       const success = value as Extract<PublicationOutcome, { status: 'successful' }>;
       if (op.kind === 'create') {
         target = { ticket: reference(success.ticket), url: url(success.url) };
-        if (!target.ticket.startsWith(`${find(op.ticketWorkId).repository}#`)) invalid('The created ticket must belong to its planned repository.');
+        if (!target.ticket.startsWith(`${plan.tickets.find((item) => item.workId === op.ticketWorkId)!.destination.repository}#`)) invalid('The created ticket must belong to its planned repository.');
       } else {
         target = receipt(plan, op.ticketWorkId);
         if (!target) invalid('The operation has no known ticket result.');
@@ -385,7 +423,12 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
       location: publishedLocation, ...(op.kind === 'create' && status === 'successful' && !publishedLocation ? { verification: { status: 'pending' as const, evidence: 'The ticket was created; stored content and terms still need inspection.' } } : {}), resolvedBy: 'resolvedBy' in actor ? filled(actor.resolvedBy, 'resolution identity') : null, recordedAt };
     writeAttempt(plan.planId, operationId, next);
     evidence(plan.planId, operationId, `${next.resolvedBy ? `Resolved by ${next.resolvedBy}: ` : ''}${status}: ${proof}`);
-    if (text !== null && target && publishedLocation && !(op.kind === 'comment' && op.purpose === 'notice')) {
+    const dependency = plan.tickets.find((item) => item.workId === op.ticketWorkId)?.dependencyOf !== undefined;
+    // A Dependency records the ticket that received its request. Its text is never edited, so it keeps no published text.
+    if (dependency && status === 'successful' && target) {
+      recordDependencyTicket(op.ticketWorkId, target.ticket);
+    }
+    if (text !== null && target && publishedLocation && !dependency && !(op.kind === 'comment' && op.purpose === 'notice')) {
       db.prepare('INSERT INTO published_text (plan_id, operation_id, work_id, ticket, url, text, location, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(plan.planId, operationId, op.ticketWorkId, target.ticket, target.url, text, JSON.stringify(publishedLocation), recordedAt);
     }
@@ -418,7 +461,7 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
       const boundary = verified ? { kind: 'body' as const, start: 0, end: ticket.body.length, ...(ticket.destination.provider === 'azure' ? { field: 'System.Description' as const } : {}) } : null;
       writeAttempt(planId, operationId, { ...attempt, verification, location: boundary });
       evidence(planId, operationId, `Creation verification ${verification.status}: ${verification.evidence}`);
-      if (boundary) db.prepare('INSERT INTO published_text (plan_id, operation_id, work_id, ticket, url, text, location, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      if (boundary && !ticket.dependencyOf) db.prepare('INSERT INTO published_text (plan_id, operation_id, work_id, ticket, url, text, location, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(planId, operationId, ticket.workId, attempt.ticket, attempt.url, ticket.body, JSON.stringify(boundary), now());
       bump(planId);
       return load(workId, planId);
@@ -557,11 +600,13 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
     publicationHandover: (workId, planId) => database.read(() => {
       const plan = load(workId, planId);
       const sections = plan.tickets.map((ticket) => {
+        if (ticket.dependencyOf) return [`# ${ticket.title}`, ticket.body].join('\n\n');
         const extra = plan.operations.filter((op) => op.ticketWorkId === ticket.workId && op.kind !== 'append' && op.kind !== 'replace' && 'content' in op && op.content !== ticket.body)
           .map((op) => 'content' in op ? op.content : '');
         const record = find(ticket.workId);
         const relations = [...record.parentId ? [{ workId: record.parentId, text: 'Part of' }] : [],
-          ...db.prepare('SELECT blocker_id FROM blockers WHERE work_id = ? ORDER BY blocker_id').all(ticket.workId).map((blocker) => ({ workId: String(blocker.blocker_id), text: 'Depends on' }))];
+          ...db.prepare('SELECT blocker_id FROM blockers WHERE work_id = ? ORDER BY blocker_id').all(ticket.workId).map((blocker) => ({ workId: String(blocker.blocker_id), text: 'Depends on' })),
+          ...db.prepare('SELECT dependency_id FROM dependency_blocks WHERE build_id = ? ORDER BY rowid').all(ticket.workId).map((block) => ({ workId: String(block.dependency_id), text: 'Depends on' }))];
         const links = relations.flatMap((relation) => {
           const related = plan.tickets.find((item) => item.workId === relation.workId);
           return related ? [`${relation.text} ${receipt(plan, related.workId)?.url ?? related.title}`] : [];
@@ -575,6 +620,7 @@ export function publicationRecords(database: Database, readRecord: (workId: stri
       const item = db.prepare('SELECT * FROM publication_attachments WHERE work_id = ?').get(workId);
       return item ? { workId, planId: String(item.plan_id), ticket: String(item.ticket), url: String(item.url), recordedAt: String(item.recorded_at) } : null;
     }),
+    dependencyHandoff: (dependencyId) => database.read(() => handoff(dependencyId)),
     attachPublicationUrl: (workId, revision, planId, ticket, ticketUrl) => database.write(() => {
       const record = expected(workId, revision);
       const ref = reference(ticket);

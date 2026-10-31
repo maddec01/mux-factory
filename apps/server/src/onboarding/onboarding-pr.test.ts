@@ -269,3 +269,11 @@ test("on Azure Repos, a failed push answers with az's message, and Retry goes on
     assert.equal(az.pushes.length, 1);
   }
 });
+
+test("onboarding's PR never carries Connections, even when the body sends them", async () => {
+  const preview = await previewOnboardingPr({ repo: 'maddec01/lar-web', connections: ['maddec01/lar-api'],
+    edits: { drop: [], config: { ...config, connections: [['maddec01/lar-api', 'maddec01/lar-web']] }, guidance: true }, picks }, gh().run);
+  assert.ok('changes' in preview);
+  assert.ok(preview.changes.some((c) => c.path === '.lar-factory.json'));
+  assert.ok(preview.changes.every((c) => !JSON.stringify(c).includes('lar-api')), JSON.stringify(preview.changes));
+});

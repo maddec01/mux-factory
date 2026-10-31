@@ -126,6 +126,25 @@ LAR_FACTORY_DATA_DIR=relative run --list
 check "a relative LAR_FACTORY_DATA_DIR is ignored" "[$entry]"
 rm "$old"
 
+# --connections
+
+echo '{"repositories":[{"repo":"maddec01/lar-factory"},{"repo":"maddec01/lar-server"},{"repo":"maddec01/Lar-Web"}],
+  "connections":[["maddec01/lar-server","maddec01/lar-factory"],["maddec01/lar-web","maddec01/LAR-FACTORY"],
+  ["maddec01/lar-factory","maddec01/lar-server"],["maddec01/lar-factory","maddec01/gone"],["maddec01/lar-factory"],
+  ["maddec01/lar-factory","maddec01/lar-factory"],"maddec01/lar-server"]}' >"$list_file"
+run --connections maddec01/LAR-factory
+check "--connections prints each listed repository paired with the repository once, named as the list names it" \
+    '["maddec01/lar-server","maddec01/Lar-Web"]'
+run --connections maddec01/lar-server
+check "a Connection is one pair, read from either end" '["maddec01/lar-factory"]'
+echo '{"repositories":[{"repo":"maddec01/lar-factory"}]}' >"$list_file"
+run --connections maddec01/lar-factory
+check "a list with no connections prints []" '[]'
+run --connections maddec01/elsewhere
+refuses "--connections refuses a repository that isn't onboarded" "maddec01/elsewhere isn't onboarded"
+run --connections
+refuses "--connections needs a repository" "usage: repo-config.sh"
+
 echo '{"repositories": [' >"$list_file"
 run --list
 refuses "a repository-settings.json that isn't JSON names the file" "$list_file isn't valid JSON"

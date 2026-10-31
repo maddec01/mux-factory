@@ -1,10 +1,10 @@
-// Markdown export: copies a work record's brief, decision or map, and a concept's decisions, into a folder for reading
-// outside the board. The files are copies, never an authority the board reads back, and hold only the record's markdown.
+// Markdown export: copies a work record's brief, decision or map, its Dependencies, and a concept's decisions, into a
+// folder for reading outside the board. The files are copies, never an authority the board reads back, and hold only the record's markdown.
 
 import { closeSync, constants, copyFileSync, linkSync, lstatSync, openSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { WorkRecordError } from './database.ts';
-import { BODIES, type WorkRecords } from './work-records.ts';
+import { BODIES, type Dependency, type WorkRecords } from './work-records.ts';
 
 /** The errors a filesystem without hard links, such as exFAT or some network shares, gives for `linkSync`. */
 const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS']);
@@ -15,21 +15,36 @@ function slug(markdown: string): string {
   return heading.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60).replace(/^-+|-+$/g, '');
 }
 
+/** A Dependency as markdown, headed by its owner and the first line of its need. */
+function dependencyMarkdown(dependency: Dependency): string {
+  const references = [dependency.ticket && `- Ticket ${dependency.ticket}`, ...dependency.pullRequests.map((pr) => `- PR ${pr}`)].filter(Boolean);
+  const met = dependency.met ? `Marked met by ${dependency.met.by} at ${dependency.met.at}.${dependency.needsReview ? ' An observation changed since; review it.' : ''}` : 'Not met.';
+  return [
+    `# ${dependency.owner}: ${dependency.need.split('\n')[0]}`, dependency.need,
+    '## Contract', dependency.contract || 'None agreed yet.',
+    '## Evidence of delivery', dependency.evidence || 'None agreed yet.',
+    '## References', references.join('\n') || 'None.',
+    '## Met', met,
+    '## Handover', dependency.handover || 'None.',
+  ].join('\n\n') + '\n';
+}
+
 /**
- * Writes the record's own body and, for a concept, each of its decisions' text to the existing folder `destination`,
+ * Writes the record's own body, each of its Dependencies and, for a concept, each of its decisions' text to the existing folder `destination`,
  * named `<body>-<title>.md` from each body's first heading. Returns the paths it wrote. It never replaces a file the
  * folder already holds, and a failure leaves no file behind.
  */
 export function exportMarkdown(records: WorkRecords, workId: string, destination: string): string[] {
   const record = records.read(workId);
-  const bodies = BODIES.map((body) => ({ body, workId, markdown: records.body(workId, body) }));
+  const bodies: { body: string; workId: string; markdown: string | null }[] = BODIES.map((body) => ({ body, workId, markdown: records.body(workId, body) }));
+  for (const dependency of records.dependencies(workId)) bodies.push({ body: 'dependency', workId: dependency.dependencyId, markdown: dependencyMarkdown(dependency) });
   if (record.kind === 'concept') {
     for (const child of records.children(workId)) {
       if (child.kind === 'decision') bodies.push({ body: 'decision', workId: child.workId, markdown: records.body(child.workId, 'decision') });
     }
   }
   const files = bodies.filter((entry): entry is typeof entry & { markdown: string } => entry.markdown !== null);
-  if (!files.length) throw new WorkRecordError('not-found', `The work record ${workId} has nothing to export: no brief, decision or map.`);
+  if (!files.length) throw new WorkRecordError('not-found', `The work record ${workId} has nothing to export: no brief, decision, map or Dependency.`);
   if (typeof destination !== 'string' || !isAbsolute(destination)) throw new WorkRecordError('invalid', `The export folder "${String(destination)}" isn't an absolute path.`);
   if (!statSync(destination, { throwIfNoEntry: false })?.isDirectory()) throw new WorkRecordError('invalid', `The export folder ${destination} isn't a folder.`);
 

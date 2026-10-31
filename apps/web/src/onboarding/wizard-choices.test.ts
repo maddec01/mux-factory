@@ -12,13 +12,13 @@ const azure = (parts: Partial<SetupDetection> = {}) => detection({ repo: 'contos
 const contributor = { 'push-branch': 'refused', 'open-pr': 'unverified', 'publish-ticket': 'allowed', 'edit-ticket': 'unverified', 'tag-ticket': 'refused', 'comment-ticket': 'unverified', 'type-ticket': 'unverified', 'relate-ticket': 'unverified' } as const;
 
 test('a GitHub repository with no factory files asks its questions in order after detection', () => {
-  expect(stepsOf('GitHub', detection(), {})).toEqual(['project', 'detect', 'import', 'role', 'consent', 'docs', 'skills']);
+  expect(stepsOf('GitHub', detection(), {})).toEqual(['project', 'detect', 'import', 'role', 'connections', 'consent', 'docs', 'skills']);
 });
 
 test('an Azure DevOps repository picks its team before the import, and earlier factory files add Factory files, then Repository edits once one is dropped', () => {
   const files = azure({ factoryFiles: { found: [{ kind: 'config', paths: ['.lar-factory.json'] }] } });
-  expect(stepsOf('Azure DevOps', null, {})).toEqual(['project', 'detect', 'source', 'import', 'role', 'consent', 'docs', 'skills']);
-  expect(stepsOf('Azure DevOps', files, {})).toEqual(['project', 'detect', 'source', 'import', 'role', 'consent', 'docs', 'skills', 'files']);
+  expect(stepsOf('Azure DevOps', null, {})).toEqual(['project', 'detect', 'source', 'import', 'role', 'connections', 'consent', 'docs', 'skills']);
+  expect(stepsOf('Azure DevOps', files, {})).toEqual(['project', 'detect', 'source', 'import', 'role', 'connections', 'consent', 'docs', 'skills', 'files']);
   expect(stepsOf('Azure DevOps', files, { drop: ['config'] }).slice(-2)).toEqual(['files', 'edits']);
 });
 

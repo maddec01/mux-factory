@@ -2,7 +2,7 @@ import { onAzure, type RepositoryItemSource } from '@lar-factory/shared';
 import { isItemSource, sharedDefaultsOf, type RepositoryConfig } from '@lar-factory/shared/repository-settings';
 import { readBranchFile as readAzureFile } from '../azure/azure-repos.ts';
 import { readBranchFile } from '../github/github.ts';
-export { isRepo, isItemSource, isProgress, readRepositoryList, saveOnboarding, saveOnboarded, onTheBoard, stillOnboarding, readBoardSettings } from '@lar-factory/shared/repository-settings';
+export { isRepo, isItemSource, isProgress, readRepositoryList, saveConnections, saveOnboarding, saveOnboarded, onTheBoard, stillOnboarding, readBoardSettings } from '@lar-factory/shared/repository-settings';
 export type { RepositoryConfig, OnboardedRepository } from '@lar-factory/shared/repository-settings';
 
 /**

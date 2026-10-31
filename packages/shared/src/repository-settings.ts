@@ -9,7 +9,7 @@ import {
 } from '@lar-factory/shared';
 import { REPOSITORY_LIST_FILE, boardDataDir } from '@lar-factory/shared/data-dir';
 import {
-  isItemSource, readListFile, writeListFile,
+  connectedTo, isItemSource, readListFile, writeListFile,
 } from './repository-list.ts';
 
 /** The settings that pause the work depending on them when they change. */
@@ -100,8 +100,8 @@ function readSettings(dir: string) {
   return { raw, list, settings };
 }
 
-/** The setup that the repository's local settings make. */
-function setupOf(repo: string, local: LocalSettings): RepositorySetup {
+/** The setup that the repository's local settings and its Connections make. */
+function setupOf(repo: string, local: LocalSettings, connections: string[] = []): RepositorySetup {
   const pick = <K extends keyof SharedRepositorySettings>(key: K) => local.overrides?.[key] ?? local.shared?.[key];
   const accessOf = (op: RepositoryOperation): OperationAccess => local.access?.[op] ?? 'unverified';
   const itemSource = pick('itemSource') ?? (onAzure(repo) ? null : { kind: 'issues' as const });
@@ -118,13 +118,14 @@ function setupOf(repo: string, local: LocalSettings): RepositorySetup {
     sources: Object.fromEntries(SHARED_SETTINGS.map((key) => [key,
       local.overrides?.[key] !== undefined ? 'local' : local.shared?.[key] !== undefined ? 'shared' : 'default'])) as RepositorySetup['sources'],
     shared: local.shared ?? {},
+    connections,
   };
 }
 
 /** Each listed repository's setup, in the list's order. */
 export function readRepositorySetups(dir = boardDataDir()): RepositorySetup[] {
-  const { list, settings } = readSettings(dir);
-  return list.map(({ repo }, index) => setupOf(repo, settings[index]!));
+  const { raw, list, settings } = readSettings(dir);
+  return list.map(({ repo }, index) => setupOf(repo, settings[index]!, connectedTo(repo, raw.connections, list)));
 }
 
 /**

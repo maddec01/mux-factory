@@ -4,8 +4,12 @@ import { join } from 'node:path';
 import { afterEach, test } from 'vite-plus/test';
 import assert from 'node:assert/strict';
 import { openWorkRecords, type PullRequestState, type WorkRecord, type WorkRecords } from '@lar-factory/work-records';
+import { azureBoard } from '../azure/azure-board.ts';
+import { fakeAz, type FakePr, type WorkItem } from '../azure/fake-az.ts';
+import { observePr } from '../config/pr-host.ts';
+import { observeIssue } from '../github/github.ts';
 import type { TicketObservation } from './item-source.ts';
-import { finishCompleted, observeRecords } from './observe-records.ts';
+import { finishCompleted, observeRecords, type ObserveReads } from './observe-records.ts';
 
 const REPO = 'maddec01/lar-factory';
 const opened: { records: WorkRecords; dir: string }[] = [];
@@ -198,4 +202,129 @@ test("a ticket the item source's last read shows open takes no read of its own",
   await observeRecords(records, [REPO], { ...reads, known: (repo, number) => (repo === REPO && number === 12 ? { state: 'open', assignee: 'pedro' } : undefined) });
   assert.deepEqual(asked, []);
   assert.deepEqual(records.observations(workId).map((o) => [o.of, o.state, o.assignee]), [['ticket', 'open', 'pedro']]);
+});
+
+/** A Dependency on `owner`'s ticket #5 and PR #9, held by a concept on the board with no ticket or PR of its own. */
+function dependencyOn(records: WorkRecords, owner: string): string {
+  const concept = records.create({ title: 'Concept', repository: REPO, kind: 'concept' });
+  return records.addDependency(concept.workId, { need: 'A sign-in endpoint', owner, ticket: `${owner}#5`, pullRequests: [`${owner}#9`], handover: '# Handover' })
+    .dependencyId;
+}
+
+/** What each of the Dependency's subjects was last read as, ticket first. */
+const kinds = (records: WorkRecords, id: string) => records.dependency(id).observations.map((o) => o.kind);
+
+/** A fake gh answering the Dependency's issue view and pr view from `answers`, each throwing to fail the call. */
+function ghAnswering(answers: { ticket: () => string; pr: () => string }) {
+  const calls: string[][] = [];
+  const run = async (args: string[]) => (calls.push(args), args[0] === 'issue' ? answers.ticket() : answers.pr());
+  const reads: ObserveReads = { ticket: (repo, number) => observeIssue(repo, number, run), pr: (repo, number) => observePr(repo, number, run) };
+  return { calls, reads };
+}
+const issue = (state: string) => () => JSON.stringify({ state, assignees: [] });
+const fails = (message: string) => () => { throw new Error(message); };
+
+test("a Dependency's GitHub ticket and PR read as each kind, and the reads write nothing", async () => {
+  const records = await open();
+  const id = dependencyOn(records, 'acme/auth');
+  const answers = { ticket: issue('OPEN'), pr: () => 'OPEN' };
+  const gh = ghAnswering(answers);
+  const observed = async (ticket: () => string, pr: () => string) => {
+    Object.assign(answers, { ticket, pr });
+    await observeRecords(records, [REPO], gh.reads);
+    return kinds(records, id);
+  };
+  assert.deepEqual(await observed(issue('OPEN'), () => 'OPEN'), ['open', 'open']);
+  assert.deepEqual(await observed(issue('CLOSED'), () => 'MERGED'), ['closed', 'merged']);
+  assert.deepEqual(await observed(issue('OPEN'), () => 'CLOSED'), ['reopened', 'closed']);
+  assert.deepEqual(await observed(issue('OPEN'), () => 'OPEN'), ['reopened', 'reopened'], 'it stays reopened while it stays open');
+  assert.deepEqual(await observed(fails('GraphQL: Could not resolve to an issue or pull request with the number of 5.'),
+    fails('GraphQL: Could not resolve to a PullRequest with the number of 9.')), ['deleted', 'deleted']);
+  assert.deepEqual(await observed(fails('HTTP 403: Resource not accessible by personal access token'), fails('HTTP 401: Bad credentials')),
+    ['access-lost', 'access-lost']);
+  assert.deepEqual(await observed(fails('HTTP 502: Bad Gateway'), fails("GraphQL: Could not resolve to a Repository with the name 'acme/auth'.")),
+    ['read-failed', 'read-failed'], "a repository GitHub doesn't resolve may be deleted or hidden, so it is a failed read");
+  assert.deepEqual(records.dependency(id).observations.map((o) => [o.detail, o.lastGood?.kind]), [
+    ['HTTP 502: Bad Gateway', 'deleted'], ["GraphQL: Could not resolve to a Repository with the name 'acme/auth'.", 'deleted'],
+  ]);
+  assert.deepEqual([...new Set(gh.calls.map((call) => call.slice(0, 2).join(' ')))], ['issue view', 'pr view'], 'only views, never an edit');
+});
+
+test("a Dependency's Azure work item and PR read as each kind, and the reads write nothing", async () => {
+  const API = 'contoso/Fabrikam%20Fiber/Web%20Api';
+  const records = await open();
+  const id = dependencyOn(records, API);
+  const item: WorkItem = { id: 5, type: 'User Story', state: 'Active' };
+  const pr: FakePr = { pullRequestId: 9, status: 'active', sourceRefName: 'refs/heads/sign-in' };
+  let failure: string | undefined;
+  let az = fakeAz({ items: [item], pullRequests: [pr], fail: () => (failure ? new Error(failure) : undefined) });
+  const calls: string[][] = [];
+  const run = (args: string[]) => (calls.push(args), az.run(args));
+  const source = azureBoard([API], 'Fabrikam Team', run);
+  const reads: ObserveReads = { ticket: (repo, number) => source.observeTicket(repo, number), pr: (repo, number) => observePr(repo, number, run) };
+  const observed = async (state: string, status: FakePr['status']) => {
+    Object.assign(item, { state });
+    Object.assign(pr, { status });
+    await observeRecords(records, [REPO], reads);
+    return kinds(records, id);
+  };
+  assert.deepEqual(await observed('Active', 'active'), ['open', 'open']);
+  assert.deepEqual(await observed('Closed', 'completed'), ['closed', 'merged']);
+  assert.deepEqual(await observed('Active', 'abandoned'), ['reopened', 'closed']);
+  assert.deepEqual(await observed('Active', 'active'), ['reopened', 'reopened']);
+  failure = "az devops invoke failed: TF400813: The user 'pedro@contoso.com' is not authorized to access this resource.";
+  assert.deepEqual(await observed('Active', 'active'), ['access-lost', 'access-lost']);
+  failure = 'az devops invoke failed: timed out';
+  assert.deepEqual(await observed('Active', 'active'), ['read-failed', 'read-failed']);
+  failure = undefined;
+  az = fakeAz({ items: [] });
+  assert.deepEqual(await observed('Active', 'active'), ['deleted', 'deleted'], 'a work item the batch omits and a PR az finds no more are deleted');
+  const read = (call: string[]) => call.slice(0, 3).join(' ') === 'repos pr show'
+    || (call.slice(0, 2).join(' ') === 'devops invoke' && (!call.includes('--http-method') || call[call.indexOf('--resource') + 1] === 'workitemsbatch'));
+  assert.deepEqual(calls.filter((call) => !read(call)), [], 'only reads, never a write');
+});
+
+test('a read never changes the met mark: an outage leaves it unflagged, and a reopened ticket flags it for review', async () => {
+  const records = await open();
+  const id = dependencyOn(records, 'acme/auth');
+  const answers = { ticket: issue('CLOSED'), pr: () => 'MERGED' };
+  const { reads } = ghAnswering(answers);
+  await observeRecords(records, [REPO], reads);
+  records.markDependencyMet(id, records.dependency(id).revision, 'pedro');
+
+  Object.assign(answers, { ticket: fails('HTTP 502: Bad Gateway'), pr: fails('HTTP 502: Bad Gateway') });
+  await observeRecords(records, [REPO], reads);
+  const outage = records.dependency(id);
+  assert.deepEqual([outage.met?.by, outage.needsReview, outage.handover], ['pedro', false, '# Handover']);
+  assert.deepEqual(outage.observations.map((o) => [o.kind, o.lastGood?.kind]), [['read-failed', 'closed'], ['read-failed', 'merged']]);
+
+  Object.assign(answers, { ticket: issue('OPEN'), pr: () => 'MERGED' });
+  await observeRecords(records, [REPO], reads);
+  const reopened = records.dependency(id);
+  assert.deepEqual([reopened.met?.by, reopened.needsReview, kinds(records, id)], ['pedro', true, ['reopened', 'merged']]);
+});
+
+test("each Dependency subject reads once a pass, and a ticket the item source's last read shows takes no read", async () => {
+  const records = await open();
+  const [first, second] = [dependencyOn(records, 'acme/auth'), dependencyOn(records, 'acme/auth')];
+  const gh = ghAnswering({ ticket: issue('OPEN'), pr: () => 'MERGED' });
+  await observeRecords(records, [REPO], gh.reads);
+  assert.deepEqual(gh.calls.map((call) => call.slice(0, 2).join(' ')), ['issue view', 'pr view']);
+  assert.deepEqual([kinds(records, first), kinds(records, second)], [['open', 'merged'], ['open', 'merged']]);
+
+  const known = (repo: string, number: number) => (repo === 'acme/auth' && number === 5 ? { state: 'closed' as const } : undefined);
+  await observeRecords(records, [REPO], { ...gh.reads, known });
+  assert.deepEqual(gh.calls.slice(2).map((call) => call.slice(0, 2).join(' ')), ['pr view']);
+  assert.deepEqual(kinds(records, first), ['closed', 'merged']);
+});
+
+test("a Dependency in a repository whose reads wait takes no read and keeps its last observation", async () => {
+  const records = await open();
+  const id = dependencyOn(records, 'acme/auth');
+  const gh = ghAnswering({ ticket: issue('OPEN'), pr: () => 'OPEN' });
+  await observeRecords(records, [REPO], gh.reads);
+  const before = records.dependency(id);
+  await observeRecords(records, [REPO], { ...gh.reads, waits: (repo) => repo === 'acme/auth' });
+  assert.equal(gh.calls.length, 2);
+  assert.deepEqual(records.dependency(id), before);
 });

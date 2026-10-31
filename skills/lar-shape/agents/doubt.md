@@ -19,8 +19,10 @@ Assume the author is overconfident. Hunt for:
   existing data; a decision the builder would have to make alone.
 - **Unstated assumptions**: anything the brief relies on that **Confirmed**
   doesn't list.
-- **Repository**: anything the brief changes outside the repo path; that work
-  waits for Connections, so the brief notes it as out of scope.
+- **Repository**: anything the brief changes outside the repo path. That work
+  belongs in a build in that repository, which the user approved, or in a
+  Dependency for the team that owns it, and **Notes for the builder** names
+  which one.
 - **Provider writes**: a step that edits a ticket's body, comments, labels,
   tags or Azure State to record progress; factory progress stays in the work
   record.

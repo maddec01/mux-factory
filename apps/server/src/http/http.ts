@@ -26,7 +26,7 @@ export interface HttpDeps {
   board: BoardState;
   commands: ItemCommands;
   capture: Capture;
-  startAfter: Pick<StartAfter, 'arm' | 'disarm'>;
+  startAfter: StartAfter;
   retention: Pick<BoardRetention, 'save'>;
   /** Archive's work as the records are now, which Settings › Archive reads from /api/archive when it opens. */
   archive(): Item[];
@@ -260,6 +260,15 @@ export function createBoardServer({ board, commands, capture, startAfter, retent
     '/api/needs-you': {
       what: 'the item that needs you and the choice', disabled: 'Acting on Needs you is disabled in sample mode.',
       run: forItem('Name the item that needs you.', (itemId, input) => commands.resolveNeedsYou(itemId, input.choice)),
+    },
+    '/api/dependency-met': {
+      what: 'the Dependency to mark', disabled: 'Marking a Dependency met is disabled in sample mode.',
+      run: forItem('Name the item the Dependency holds.', async (itemId, input) => {
+        const marked = commands.markDependencyMet(itemId, input.dependencyId, input.revision, input.met);
+        // A met mark can release an armed start at once, with no read to wait for.
+        if (marked.status === 200) await startAfter.startUnblocked();
+        return marked;
+      }),
     },
     '/api/item-description': {
       what: 'the description and its item', disabled: 'Saving descriptions is disabled in sample mode.',

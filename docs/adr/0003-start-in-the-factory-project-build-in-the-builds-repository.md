@@ -26,3 +26,5 @@ with separate build workspaces is an inference from that arrangement, not a
 recorded historical rationale or comparison of alternatives.
 
 Superseded by [ADR 0009](0009-start-in-the-issues-repository-project.md): Start now opens the thread in the issue's repository project.
+
+Amended by [ADR 0043](0043-work-another-team-delivers-is-a-dependency-not-a-build.md): only work in a connected, onboarded repository becomes a build there, and only after the user approves it. A change another team delivers in a repository the user does not onboard is a Dependency in the work record.

@@ -38,6 +38,12 @@ export class ReadProblem extends Error {
   }
 }
 
+/** A read the provider answered with a ticket or PR that doesn't exist. */
+export class NotFound extends Error {}
+
+/** A read the provider refused because the signed-in account can't see that repository, ticket or PR. */
+export class AccessLost extends Error {}
+
 /**
  * How fast a merged read keeps each source: a source holding an item `active` says is due every `activeMs`, any other
  * every `idleMs`, ACTIVE_READ_MS and IDLE_READ_MS when absent, and every source is idle while `slow` holds, as when a

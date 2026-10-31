@@ -1,8 +1,8 @@
 import { test } from 'vite-plus/test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { inRepo, itemRepoNames, onAzure, repoTag, shownRepo, blockedText, blockerRef, buildBranch, buildMessage, canAbandon, checkState, failedCheck, ghBlocksRead, itemSource, isBuild, itemPr, itemTotal, isRecentlyDone, isSlow, isStale, itemName, ref, kindLabel, labelKind, labelStatuses, openBlockers, repoKey, repoName, onboardingConfigFile, providerTool, repositoryProjectHint, sameRepo, skillRenameProblem, startHold, sliceProgress, statusLabel, threadLink, usesGh, workMessage, workTitle } from './model.ts';
-import type { BoardData, Checks, Item, Status } from './model.ts';
+import { inRepo, itemRepoNames, onAzure, repoTag, shownRepo, blockedText, blockerRef, dependencyNotice, buildBranch, buildMessage, canAbandon, checkState, failedCheck, ghBlocksRead, itemSource, isBuild, itemPr, itemTotal, isRecentlyDone, isSlow, isStale, itemName, ref, kindLabel, labelKind, labelStatuses, openBlockers, repoKey, repoName, onboardingConfigFile, providerTool, repositoryProjectHint, sameRepo, skillRenameProblem, startHold, sliceProgress, statusLabel, threadLink, usesGh, workMessage, workTitle } from './model.ts';
+import type { BoardData, Blocker, Checks, DependencyHold, DependencyObservationKind, Item, Status } from './model.ts';
 import { boardSections } from './board-view.ts';
 import { validateDraft } from './add-item.ts';
 import { day, formatTokens, formatUsd, shortAgo } from './format.ts';
@@ -80,6 +80,38 @@ test("a blocker's ref is #n for the item's repository, and names another reposit
   assert.deepEqual([blockerRef(own, { number: 3, repo: own.repo! }), blockerRef(own, { number: 3, repo: own.repo! }, true)], ['#3', '#3']);
   assert.deepEqual([blockerRef(own, { number: 4, repo: 'maddec01/lar-apple' }), blockerRef(own, { number: 4, repo: 'maddec01/lar-apple' }, true)],
     ['maddec01/lar-apple#4', 'lar-apple#4']);
+});
+
+/** A Dependency on the server team's blocker, met when `met` is, its ticket last read as `kind`. */
+function dependency(kind: DependencyObservationKind, met = false, change: Partial<DependencyHold> = {}): Blocker {
+  const hold: DependencyHold = { dependencyId: 'd1', revision: 2, owner: 'server team', need: 'An export endpoint', ticket: 'maddec01/lar-server#40',
+    named: [], evidence: 'The endpoint answers in staging', met: met ? { by: 'pedro', at: '2026-10-30T10:00:00Z' } : null, needsReview: false,
+    observation: { subject: 'maddec01/lar-server#40', kind, detail: null, observedAt: '2026-10-30T09:00:00Z', lastGood: null }, ...change };
+  return { number: 40, repo: 'maddec01/lar-server', state: met ? 'closed' : 'open', title: hold.need, dependency: hold };
+}
+
+test("an unmet Dependency holds the start whatever its ticket shows, and a met one doesn't", () => {
+  const unmet = dependency('closed');
+  assert.deepEqual(openBlockers(item('Ready', [], { blockers: [unmet, dependency('open', true)] })), [unmet]);
+  assert.equal(blockedText(item('Ready', [], { blockers: [unmet] })), 'Blocked by the Dependency on server team until you mark it met');
+  assert.equal(blockedText(item('Ready', [], { blockers: [{ number: 3, repo: 'maddec01/lar-server', state: 'open' }, unmet] })),
+    'Blocked by #3 until it completes, and by the Dependency on server team until you mark it met');
+  assert.equal(blockedText(item('Ready', [], { blockers: [dependency('open', true)] })), null);
+});
+
+test('a Dependency goes by its owner, never its ticket number', () => {
+  const own = item('Ready', []);
+  assert.deepEqual([blockerRef(own, dependency('open')), blockerRef(own, dependency('open'), true)], ['Dependency on server team', 'server team']);
+});
+
+test('a closed ticket or merged PR suggests marking it met, and a changed observation after the mark asks for a review', () => {
+  assert.equal(dependencyNotice(dependency('closed').dependency!), 'Its ticket maddec01/lar-server#40 is closed. Mark it met once the change is delivered.');
+  assert.equal(dependencyNotice(dependency('merged', false, { observation: { subject: 'maddec01/lar-server#41', kind: 'merged', detail: null, observedAt: '2026-10-30T09:00:00Z', lastGood: null } }).dependency!),
+    'Its PR maddec01/lar-server#41 is merged. Mark it met once the change is delivered.');
+  assert.equal(dependencyNotice(dependency('open').dependency!), null);
+  assert.equal(dependencyNotice(dependency('closed', true).dependency!), null, 'a met Dependency needs no suggestion');
+  assert.equal(dependencyNotice(dependency('reopened', true, { needsReview: true }).dependency!),
+    'Its ticket maddec01/lar-server#40 changed to reopened after you marked it met. Review the mark.');
 });
 
 test('an item with a ticket goes by its number, and captured work with none by its title, never #0', () => {

@@ -21,7 +21,9 @@ build's work ID and the repo path. `<lar-build>` is the installed skill folder h
   build's unfinished slices so you add no work already there, and re-slice per
   **Slices**; outcome `re-sliced`.
 - Work for another repository is never a slice: return it as
-  `needs <owner/repo>: <the work>`. The brief's **Domain docs** aren't a slice
+  `needs <owner/repo>: <the work>`, ending in `(not onboarded)` when
+  `bash <lar-build>/shared/scripts/repo-config.sh --list` doesn't list it, so
+  the builder offers onboarding or a Dependency rather than a build there. The brief's **Domain docs** aren't a slice
   either; the builder writes them.
 
 Return only the slice list: work ID, title, blockers; then any `needs` lines;

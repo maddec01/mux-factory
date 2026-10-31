@@ -41,7 +41,20 @@ function endToEndCheck(lines: string[]): EndToEndCheck {
   return { title: STEP.test(first) ? '' : first, steps: matches(trimmed, STEP) };
 }
 
-/** Parses a concept's issue body; a missing section is empty, and a body without an End-to-end check has no check. */
+/** The lines outside fenced code blocks, so a Mermaid flowchart's lines are left out. */
+function unfenced(lines: string[] = []): string[] {
+  let fenced = false;
+  return lines.filter((line) => {
+    if (!/^\s*```/.test(line)) return !fenced;
+    fenced = !fenced;
+    return false;
+  });
+}
+
+/**
+ * Parses a concept's issue body; a missing section is empty, a body without an End-to-end check has no check, and a
+ * Map listing no Dependencies has none.
+ */
 export function parseConceptMap(body: string): ConceptMap {
   const found = sections(body);
   const map: ConceptMap = {
@@ -51,5 +64,7 @@ export function parseConceptMap(body: string): ConceptMap {
   };
   const check = found.get('end-to-end check');
   if (check) map.check = endToEndCheck(check);
+  const dependencies = bullets(unfenced(found.get('map')));
+  if (dependencies.length) map.dependencies = dependencies;
   return map;
 }

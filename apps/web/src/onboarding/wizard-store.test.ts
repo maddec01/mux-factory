@@ -251,10 +251,10 @@ test('a repository with no factory files goes through every question, and Finish
     await settle(() => wizard.getState().next());
     steps.push(wizard.getState().run!.step);
   }
-  expect(steps).toEqual(['detect', 'import', 'role', 'consent', 'docs', 'skills']);
+  expect(steps).toEqual(['detect', 'import', 'role', 'connections', 'consent', 'docs', 'skills']);
   await settle(() => wizard.getState().save());
   expect(posted('/api/onboarding/setup')).toEqual([{ repo: 'maddec01/lar-web', projectId: 'lar-web', itemSource: { kind: 'issues' }, role: '  Web client ',
-    consent: ['push-branch', 'open-pr', 'edit-ticket'], domainDocs: { kind: 'private' }, skills: [] }]);
+    consent: ['push-branch', 'open-pr', 'edit-ticket'], domainDocs: { kind: 'private' }, skills: [], connections: [] }]);
   expect(posted('/api/onboarding/pr')).toEqual([]);
   expect(wizard.getState().finish).toEqual({ state: 'done', pr: null });
   await settle(() => wizard.getState().close());

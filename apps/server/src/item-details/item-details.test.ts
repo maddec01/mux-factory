@@ -101,7 +101,7 @@ test('export refuses work with nothing written, a second export of the same file
   const reader = createItemDetails(null, () => undefined, { records, exportFolder });
   const build = records.create({ title: 'Owner accounts', repository: WEB, kind: 'build' });
   const empty = await reader.exportMarkdown(boardItem(build.workId));
-  assert.deepEqual(empty, { status: 409, error: `The work record ${build.workId} has nothing to export: no brief, decision or map.` });
+  assert.deepEqual(empty, { status: 409, error: `The work record ${build.workId} has nothing to export: no brief, decision, map or Dependency.` });
   records.setBody(build.workId, build.revision, 'brief', '# Owner accounts');
   assert.ok('paths' in await reader.exportMarkdown(boardItem(build.workId)));
   const again = await reader.exportMarkdown(boardItem(build.workId));

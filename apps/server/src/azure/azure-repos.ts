@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodePart } from '@lar-factory/shared';
 import type { CommitTree, TreeEntry } from '../github/github.ts';
-import { API_VERSION, az, azureGet, orgFlags, withFile, type Az } from './azure-items.ts';
+import { API_VERSION, az, azureGet, orgFlags, refusalOf, withFile, type Az } from './azure-items.ts';
 import { prStateOf, type AzurePr } from './azure-prs.ts';
 
 /** The az flags that name the repository's organization, with its project and repository names as az takes them. */
@@ -176,10 +176,13 @@ async function editPrBody(url: string, body: string, run: Az = az): Promise<void
   await json(run, ['repos', 'pr', 'update', '--id', id, `--description=${body}`], repo);
 }
 
-/** Whether a PR, by its URL, is open, merged or closed without merging, as az repos pr show says: active, completed or abandoned. */
+/**
+ * Whether a PR, by its URL, is open, merged or closed without merging, as az repos pr show says: active, completed or
+ * abandoned. Throws NotFound or AccessLost when Azure DevOps says so.
+ */
 async function prState(url: string, run: Az = az): Promise<'OPEN' | 'MERGED' | 'CLOSED'> {
   const { id, repo } = prOf(url);
-  const state = prStateOf(await json<AzurePr>(run, ['repos', 'pr', 'show', '--id', id], repo));
+  const state = prStateOf(await json<AzurePr>(run, ['repos', 'pr', 'show', '--id', id], repo).catch((err: unknown) => { throw refusalOf(err); }));
   return state === 'merged' ? 'MERGED' : state === 'closed' ? 'CLOSED' : 'OPEN';
 }
 

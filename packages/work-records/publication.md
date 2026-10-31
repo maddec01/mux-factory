@@ -4,7 +4,9 @@ The board server and installed command use `@lar-factory/work-records/publicatio
 Browser code uses only `@lar-factory/shared/publication`. The existing work-record
 journal owns all durable state; publication never changes Status or starts a build.
 
-`publicationEngine(records, { dir?, settings?, provider? })` returns async methods:
+`publicationEngine(records, { dir?, settings?, allowed?, provider? })` returns the async
+methods below. `allowed` says which repositories are on this Mac's list, and defaults to
+the saved list.
 
 - `prepare(workId, request)` records an immutable, unapproved plan.
 - `inspect(workId, planId)` checks sources and fresh effective settings.

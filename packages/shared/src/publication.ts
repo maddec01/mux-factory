@@ -49,7 +49,10 @@ export interface VocabularyTerm {
 }
 
 export interface PublicationTicket {
+  /** The work ID, or for a Dependency's request, the Dependency's ID. */
   workId: string;
+  /** Set on a Dependency's request: the work record that holds the Dependency. Its destination is the owning team's repository. */
+  dependencyOf?: string;
   /** Node engine's effective settings at preview. Older journal callers may omit it. */
   settingsSnapshot?: string;
   destination: PublicationDestination;
@@ -198,6 +201,16 @@ export interface PublicationDocument {
   builderNotes: string[];
   domainNotes: string[];
   relatedTickets: string[];
+}
+
+/** Team-language request for the team that owns a Dependency, rendered into its ticket or handover. */
+export interface PublicationDependencyDocument {
+  dependencyId: string;
+  title: string;
+  change: string;
+  reason: string;
+  contract: string;
+  checks: string[];
 }
 
 /** A fresh journal read for the reusable board dialog. This is never durable browser state. */

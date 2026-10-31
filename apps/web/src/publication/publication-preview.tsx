@@ -37,6 +37,9 @@ export function PublicationPreview() {
     {reasons.length > 0 && <Alert tone="warning" title="Review before continuing">{reasons.join(' ')}</Alert>}
     {plan.tickets.map((ticket) => <section key={ticket.workId} className="grid min-w-0 gap-2 rounded-lg border border-base-300 p-3" data-publication-ticket>
       <h3 className="m-0 text-sm font-medium">{ticket.title}</h3>
+      {ticket.dependencyOf && <p className="m-0 text-xs" data-dependency-request>Request for the team that owns a Dependency. {plan.operations.some((operation) => operation.ticketWorkId === ticket.workId)
+        ? 'Their ticket gets this request once. Later corrections become handover text you send yourself.'
+        : ticket.destination.ticket ? 'Their ticket is never changed. Send this text to the team yourself.' : 'Handover only. Send this request to the team yourself.'}</p>}
       <p className="m-0 text-xs">{ticket.destination.provider === 'azure' ? 'Azure DevOps' : 'GitHub'} · {ticket.destination.repository}{ticket.destination.project ? ` · ${ticket.destination.project}` : ''}{ticket.destination.ticket ? ` · ${ticket.destination.ticket}` : ' · New ticket'}</p>
       <p className="m-0 text-xs">Effective type: {ticket.typeResolution.selected ?? 'none'}. Labels or tags: {[...new Set(Object.values(ticket.vocabulary).flatMap((term) => term.labels))].join(', ') || 'none'}.</p>
       <ul className="m-0 pl-5 text-xs">{Object.entries(ticket.vocabulary).map(([term, mapping]) => <li key={term}>{term}: {mapping.type ?? 'no type'}; {mapping.labels.join(', ') || 'no labels or tags'}</li>)}</ul>
@@ -51,6 +54,8 @@ export function PublicationPreview() {
         return <li key={operation.operationId} data-publication-operation>
         {operation.kind} · {name(operation.ticketWorkId)}{'relatedWorkId' in operation ? ` · ${operation.relationship} ${name(operation.relatedWorkId)}` : ''}
         <p className="m-0 text-xs">{plan.results.find((result) => result.operation.operationId === operation.operationId)?.status === 'successful' ? 'Completed. This operation will not repeat.' : 'Remaining write. Approve this exact operation before it runs.'}</p>
+        {operation.kind === 'relationship' && plan.tickets.find((item) => item.workId === operation.relatedWorkId)?.dependencyOf && <p className="m-0 text-xs" data-dependency-link>Links this ticket to the team's ticket. If the provider refuses, a fallback previews a "Depends on" line for separate approval. A refusal keeps the local blocker and the handover.</p>}
+        {!setup && writeTicket.dependencyOf && <p className="m-0 text-xs">Write repository: {writeTicket.destination.repository}. It isn't onboarded, so it has no saved permissions or terms. Approving this exact plan is the only permission. If the login can't write there, use the handover.</p>}
         {setup && <p className="m-0 text-xs">Write repository: {writeTicket.destination.repository}. Permissions: {publicationConsents(operation, ticket).map((op) => `${op}: ${setup.access[op] === 'refused' ? 'Refused by the saved credential check' : setup.consent.includes(op) ? 'allowed locally' : 'off on this Mac'}`).join('; ')}.</p>}
         {'pullRequest' in operation && <p className="m-0 text-xs">Delivery PR: {operation.pullRequest}</p>}
         {'expected' in operation && operation.expected && <>

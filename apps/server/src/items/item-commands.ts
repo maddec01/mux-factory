@@ -4,6 +4,7 @@
 // commands in flight are private here, so every rule about which command blocks which lives in this file.
 
 import { join } from 'node:path';
+import { userInfo } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { WAITS_FOR_ONBOARDING, blockedText, buildBranch, buildMessage, canAbandon, isDriftChoice, isOnboarding, sameRepo, workMessage } from '@lar-factory/shared';
 import type { BoardData, DriftChoice, Item, ModelChoice, ModelGroup, SkillCheckOutcome, StartedThread, StartResult, Status } from '@lar-factory/shared';
@@ -65,6 +66,11 @@ export interface ItemCommands {
    * work moves it to List. Setting it aside is Abandon.
    */
   resolveNeedsYou(itemId: string, choice: unknown): Promise<Reply>;
+  /**
+   * Marks a Dependency holding the item met, as the user decided, or clears the mark when `met` is false. `revision` is
+   * the Dependency's as the board showed it, so a change since then refuses the write.
+   */
+  markDependencyMet(itemId: string, dependencyId: unknown, revision: unknown, met: unknown): Reply;
 }
 
 export interface ItemCommandsDeps {
@@ -579,6 +585,23 @@ export function createItemCommands({ board, items, records, reread, archive, off
         return withBoard(err instanceof WorkRecordError ? 409 : 502, { error: (err as Error).message });
       }
       return withBoard(200, { error: null });
+    },
+
+    markDependencyMet(itemId, dependencyId, revision, met) {
+      const item = board.find(itemId);
+      if (!item) return reply(404, { error: GONE });
+      if (!records) return withBoard(409, { error: 'The board has no work records to change.' });
+      if (!item.blockers.some((b) => b.dependency?.dependencyId === dependencyId)) return withBoard(409, { error: "That Dependency doesn't hold this work." });
+      if (typeof met !== 'boolean') return withBoard(400, { error: 'Say whether the Dependency is met.' });
+      let refused: Error | null = null;
+      try {
+        if (met) records.markDependencyMet(dependencyId as string, revision as number, userInfo().username);
+        else records.clearDependencyMet(dependencyId as string, revision as number);
+      } catch (err) {
+        refused = err as Error;
+      }
+      reread();
+      return refused ? withBoard(refused instanceof WorkRecordError ? 409 : 500, { error: refused.message }) : withBoard(200, { error: null });
     },
   };
 }

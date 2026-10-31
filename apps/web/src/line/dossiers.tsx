@@ -9,7 +9,7 @@
 import { useState } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
 import { Ban, ChevronDown, ChevronRight, CircleHelp, GitPullRequest, ListChecks, Map as MapIcon, MessagesSquare } from 'lucide-react';
-import { blockerRef, plural, prLabel, itemName, ref, repoKey, repoName } from '@lar-factory/shared';
+import { blockerGroups, blockerRef, plural, prLabel, itemName, ref, repoKey, repoName } from '@lar-factory/shared';
 import type { BoardData, Item, ItemThread } from '@lar-factory/shared';
 import { Badge } from '@lar-factory/ui/design-system/Badge';
 import { useBoardStore } from '../board/board-store.ts';
@@ -49,8 +49,13 @@ function Refs({ text, find }: { text: string; find: FindRef }) {
 const waitsOn = (part: Part) => `waits on ${openWaits(part).map((b) => blockerRef(part.item, b)).join(', ')}`;
 
 /** A part's thread, its title and state; before it has one, what its start waits on. */
-function ThreadLine({ thread, waits }: { thread: ItemThread | undefined; waits: string[] }) {
-  if (!thread) return waits.length ? <span>Thread starts when {waits.join(', ')} {waits.length > 1 ? 'are' : 'is'} done</span> : null;
+function ThreadLine({ part }: { part: Part }) {
+  const { thread } = part;
+  if (!thread) {
+    const { work, dependencies } = blockerGroups(part.item, openWaits(part));
+    const waits = [...work ? [`${work.names} ${work.many ? 'are' : 'is'} done`] : [], ...dependencies ? [`you mark ${dependencies.names} met`] : []];
+    return waits.length ? <span>Thread starts when {waits.join(' and ')}</span> : null;
+  }
   return (
     <span className="flex min-w-0 items-center gap-1.5" title={thread.title}>
       <StatusGlyph status={THREAD_GLYPH[thread.state]} className="size-3" />
@@ -115,7 +120,8 @@ function Entry({ main, side }: { main: ReactNode; side?: ReactNode }) {
 }
 
 /** What keeps the work moving, as labelled rows, each shown only with entries: parts in Needs you, parts in Verify or
- *  Ready to merge, open decisions, blocked slices, parts waiting on others, parts ready to start and the map's fog. */
+ *  Ready to merge, open decisions, blocked slices, parts waiting on others, parts ready to start, the map's
+ *  Dependencies and its fog. */
 function Attention({ parent, parts, data, find }: { parent: Item; parts: Part[]; data: BoardData; find: FindRef }) {
   const ahead = parts.filter((p) => !isDone(p.item));
   const blocked = ahead.flatMap((part) => part.item.slices.filter((s) => s.progress === 'blocked').map((slice) => ({ part, slice })));
@@ -139,6 +145,10 @@ function Attention({ parent, parts, data, find }: { parent: Item; parts: Part[];
     { key: 'ready', label: 'Ready to start', tone: 'text-(--st-now)',
       entries: ahead.filter(startable).map((p) => (
         <Entry key={p.item.id} main={<PartLink part={p} />} side={<span onClick={stop}><PartStart part={p} data={data} label="Start" /></span>} />
+      )) },
+    { key: 'dependencies', label: 'Dependencies', tone: 'text-(--st-review)',
+      entries: (parent.map?.dependencies ?? []).map((d) => (
+        <Entry key={d} main={<span className="flex items-start gap-1.5 text-[13px]"><Ban className="mt-0.5 size-3.5 shrink-0 text-(--st-review)" /><span><Refs text={d} find={find} /></span></span>} />
       )) },
     { key: 'fog', label: 'Fog', tone: 'text-(--st-amber)',
       entries: (parent.map?.fog ?? []).map((q) => (
@@ -190,7 +200,7 @@ function PartRow({ part, data }: { part: Part; data: BoardData }) {
         {s && <Figures s={s} />}
         <AzureFields azure={item.azure} />
         {item.linkedPrs.map((pr) => <span key={pr.number} className="inline-flex items-center gap-1"><GitPullRequest className="size-3 text-(--st-done)" />{prLabel(pr)}</span>)}
-        <span className="min-w-0 empty:hidden"><ThreadLine thread={part.thread} waits={waits.map((b) => blockerRef(item, b))} /></span>
+        <span className="min-w-0 empty:hidden"><ThreadLine part={part} /></span>
       </span>
       {item.slices.length > 0 && <span className="col-span-2 pl-3.5"><SliceBar item={item} /></span>}
       {(item.status === 'Ready' || item.status === 'Queued') && (

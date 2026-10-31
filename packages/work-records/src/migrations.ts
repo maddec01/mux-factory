@@ -204,4 +204,48 @@ export const MIGRATIONS: readonly Migration[] = [
       update.run(Number(Boolean(markdown.trim())), String(row.work_id), digest, String(row.work_id), String(row.body));
     }
   },
+  (db) => db.exec(`
+    -- A change a work record needs from a team that owns another repository. It lives inside its record. Only the user
+    -- sets met_at; needs_review_at records that an observation changed after it was set.
+    CREATE TABLE dependencies (
+      dependency_id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES work_records (work_id),
+      need TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      contract TEXT NOT NULL,
+      evidence TEXT NOT NULL,
+      ticket TEXT,
+      -- A JSON list of PR references.
+      pull_requests TEXT NOT NULL,
+      handover TEXT NOT NULL,
+      met_by TEXT,
+      met_at TEXT,
+      needs_review_at TEXT,
+      -- The build its dependents wait on instead, kept as history after the build itself may be deleted.
+      replaced_by TEXT,
+      revision INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX dependencies_by_work_id ON dependencies (work_id);
+    -- The builds a Dependency holds; it holds no others.
+    CREATE TABLE dependency_blocks (
+      dependency_id TEXT NOT NULL REFERENCES dependencies (dependency_id),
+      build_id TEXT NOT NULL REFERENCES work_records (work_id),
+      PRIMARY KEY (dependency_id, build_id)
+    ) STRICT;
+    CREATE INDEX dependency_blocks_by_build ON dependency_blocks (build_id);
+    -- The latest read of a Dependency's ticket or one of its PRs. A newer read replaces it, whatever its kind.
+    CREATE TABLE dependency_observations (
+      dependency_id TEXT NOT NULL REFERENCES dependencies (dependency_id),
+      subject TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      detail TEXT,
+      observed_at TEXT NOT NULL,
+      -- The last read that answered, kept beside a read that failed or lost access; null after a read that answered.
+      last_good_kind TEXT,
+      last_good_at TEXT,
+      PRIMARY KEY (dependency_id, subject)
+    ) STRICT;
+  `),
 ];
